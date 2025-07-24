@@ -225,6 +225,13 @@
             console.log(`🔄 Loading web content: ${url}`);
             updateDebugStatus(`Loading: ${url}`);
             
+            // Check for problematic WebGL sites
+            const webglSites = ['threejs.org', 'webglsamples.org', 'shadertoy.com', 'babylonjs.com', 'playcanvas.com'];
+            if (webglSites.some(site => url.includes(site))) {
+                console.warn('⚠️ WARNING: This site contains complex WebGL content that may cause crashes');
+                updateDebugStatus('WARNING: WebGL site detected - may cause crashes');
+            }
+            
             // Update window title
             const domain = url.split('://')[1]?.split('/')[0] || 'Unknown';
             document.title = `Web Content - ${domain}`;

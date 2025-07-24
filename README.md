@@ -49,6 +49,32 @@ win.webContents.on("paint", (event, dirty, image, texture) => {
 win.loadURL('https://example.com');
 ```
 
+## ⚠️ WebGL Compatibility Notice
+
+Some websites with complex WebGL content may cause crashes in Tauri's WebView component. Known problematic sites include:
+
+- `threejs.org` - Complex 3D demonstrations  
+- `shadertoy.com` - GPU shader playground
+- `webglsamples.org` - WebGL sample gallery
+- `babylonjs.com` - 3D engine demos
+
+**Recommended Safe Sites for Testing:**
+- `example.com` - Simple static content
+- `httpbin.org` - HTTP request/response service  
+- `developer.mozilla.org` - MDN documentation
+- `github.com` - Version control platform
+
+If you need to capture WebGL content, consider:
+1. Using simpler WebGL demos
+2. Testing with static HTML content first
+3. Running with `RUST_BACKTRACE=1` for debugging
+
+## Running with Debug Info
+
+```bash
+RUST_BACKTRACE=1 cargo run
+```
+
 ## Platform Support
 
 | Platform | Framework | Requirements |

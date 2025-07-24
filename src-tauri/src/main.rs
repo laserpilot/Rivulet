@@ -928,6 +928,20 @@ fn update_content_url(app: tauri::AppHandle, url: String) -> Result<VideoRespons
         return Err("URL must start with https://".to_string());
     }
     
+    // Warning for known problematic WebGL sites
+    let known_webgl_sites = [
+        "threejs.org",
+        "webglsamples.org", 
+        "shadertoy.com",
+        "babylonjs.com",
+        "playcanvas.com"
+    ];
+    
+    if known_webgl_sites.iter().any(|&site| url.contains(site)) {
+        warn!("⚠️  WARNING: {} contains complex WebGL content that may cause crashes in Tauri WebView", url);
+        warn!("⚠️  Consider using simpler websites for testing or implement WebGL crash protection");
+    }
+    
     // Get the content window
     match app.get_window("content-window") {
         Some(window) => {
@@ -979,6 +993,48 @@ fn set_content_window_decorations(app: tauri::AppHandle, show_decorations: bool)
                 Err(e) => {
                     error!("❌ Failed to set content window decorations: {}", e);
                     Err(format!("Failed to set decorations: {}", e))
+                }
+            }
+        }
+        None => {
+            error!("❌ Content window not found");
+            Err("Content window not found. Please create content window first.".to_string())
+        }
+    }
+}
+
+/// PHASE G: Toggle content window decorations (title bar)
+#[command]
+fn toggle_content_window_decorations(app: tauri::AppHandle) -> Result<VideoResponse, String> {
+    info!("🎨 Toggling content window decorations");
+    
+    match app.get_window("content-window") {
+        Some(window) => {
+            // For simplicity, we'll use a static variable to track state
+            // In a production app, you might want to store this in the application state
+            static mut CONTENT_DECORATIONS_ENABLED: bool = true;
+            
+            unsafe {
+                CONTENT_DECORATIONS_ENABLED = !CONTENT_DECORATIONS_ENABLED;
+                match window.set_decorations(CONTENT_DECORATIONS_ENABLED) {
+                    Ok(_) => {
+                        let message = if CONTENT_DECORATIONS_ENABLED {
+                            "Content window title bar shown - you can now move the window"
+                        } else {
+                            "Content window title bar hidden - clean for capture"
+                        };
+                        
+                        info!("✅ Content window decorations toggled to: {}", CONTENT_DECORATIONS_ENABLED);
+                        Ok(VideoResponse {
+                            success: true,
+                            message: message.to_string(),
+                            frame_count: 0,
+                        })
+                    }
+                    Err(e) => {
+                        error!("❌ Failed to toggle content window decorations: {}", e);
+                        Err(format!("Failed to toggle decorations: {}", e))
+                    }
                 }
             }
         }
@@ -1187,7 +1243,8 @@ fn main() {
             create_content_window,          // PHASE F: Create content window
             create_content_window_dynamic,  // PHASE G: Create dynamic content window
             update_content_url,             // PHASE G: Update content window URL
-            set_content_window_decorations, // PHASE G: Toggle content window title bar
+            set_content_window_decorations, // PHASE G: Set content window title bar
+            toggle_content_window_decorations, // PHASE G: Toggle content window title bar
             start_content_window_streaming, // PHASE G: Start content window specific streaming
             close_content_window,           // NEW: Close content window with cleanup
             get_application_state,          // NEW: Get application state for sync

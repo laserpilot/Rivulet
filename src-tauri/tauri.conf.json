@@ -7,7 +7,7 @@
     "withGlobalTauri": true
   },
   "package": {
-    "productName": "Tauri Video Share",
+    "productName": "Rivulet",
     "version": "0.1.0"
   },
   "tauri": {
@@ -25,13 +25,13 @@
       {
         "fullscreen": false,
         "resizable": true,
-        "title": "Tauri Video Share",
+        "title": "Rivulet",
         "width": 480,
-        "height": 340,
+        "height": 500,
         "minWidth": 420,
-        "minHeight": 300,
+        "minHeight": 450,
         "maxWidth": 600,
-        "maxHeight": 500,
+        "maxHeight": 700,
         "decorations": true,
         "transparent": false,
         "alwaysOnTop": false
