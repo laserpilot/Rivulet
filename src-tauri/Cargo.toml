@@ -1,0 +1,43 @@
+[package]
+name = "electron-video-share"
+version = "0.1.0"
+edition = "2021"
+
+# Only build the Tauri binary, not the library
+[[bin]]
+name = "electron-video-share"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "1.5", features = [] }
+cc = "1.0"
+
+[dependencies]
+# Tauri is the new application framework  
+tauri = { version = "1.6", features = ["api-all"] }
+
+# Serialization for IPC
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Logging and error handling
+log = "0.4"
+env_logger = "0.11"
+anyhow = "1.0"
+
+# Conditional platform dependencies for Syphon + ScreenCaptureKit
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.25"
+objc = "0.2.7"
+libc = "0.2"
+gl = "0.14"
+# Core Foundation and related frameworks for ScreenCaptureKit
+core-foundation = "0.9"
+core-foundation-sys = "0.8"
+core-graphics = "0.23"
+# For getting native window handles
+raw-window-handle = "0.6"
+
+# Conditional platform dependencies for Spout
+[target.'cfg(target_os = "windows")'.dependencies]
+winapi = { version = "0.3", features = ["d3d11", "dxgi"] }

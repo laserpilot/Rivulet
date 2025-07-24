@@ -1,0 +1,91 @@
+# Build outputs and artifacts
+target/
+build/
+dist/
+*.app
+
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Compiled binaries and libraries
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.lib
+*.dSYM/
+
+# Compiled executables
+test_animated_1080p
+test_zero_copy_direct
+test_real_screencapture
+
+# Temporary files
+*.tmp
+*.temp
+app.pid
+perf_output.log
+
+# Large framework downloads and SDKs
+frameworks/Syphon\ SDK\ 5/
+frameworks/Syphon.SDK.5.zip
+frameworks/__MACOSX/
+frameworks/syphon-source/
+frameworks_old/
+
+# Test files and experimental code
+test/
+examples/basic-sharing.js
+debug-electron-syphon.js
+delayed-electron-test.js
+quick-electron-test.js
+test-electron-*.js
+syphon-helper.js
+syphon-process-manager.js
+syphon-shm-*.js
+capture-worker.js
+
+# Build configuration backups
+*.old
+*-old.*
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Rust
+/target
+Cargo.lock
+
+# TypeScript
+*.tsbuildinfo
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+node_modules
+node_modules

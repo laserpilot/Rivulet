@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Electron Video Sharing Test</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+            background: linear-gradient(45deg, #ff6b6b, #4ecdc4, #45b7d1, #96ceb4);
+            background-size: 400% 400%;
+            animation: gradientShift 3s ease infinite;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+        }
+
+        @keyframes gradientShift {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+
+        .container {
+            text-align: center;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+            max-width: 600px;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 2.5em;
+        }
+
+        .info {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 1.2em;
+        }
+
+        .counter {
+            font-size: 3em;
+            font-weight: bold;
+            color: #ff6b6b;
+            margin: 20px 0;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        .shape {
+            width: 100px;
+            height: 100px;
+            background: #45b7d1;
+            margin: 20px auto;
+            border-radius: 50%;
+            animation: bounce 2s infinite;
+        }
+
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-20px); }
+        }
+
+        .status {
+            margin-top: 20px;
+            padding: 10px;
+            background: #e8f5e8;
+            border-radius: 8px;
+            color: #2d5a2d;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎥 Electron Video Sharing</h1>
+        <div class="info">
+            This page is being shared via Syphon/Spout!
+        </div>
+        <div class="counter" id="counter">0</div>
+        <div class="shape"></div>
+        <div class="status">
+            ✅ Sharing Active - Check your Syphon receiver!
+        </div>
+    </div>
+
+    <script>
+        let counter = 0;
+        const counterElement = document.getElementById('counter');
+        
+        // Update counter every second
+        setInterval(() => {
+            counter++;
+            counterElement.textContent = counter;
+        }, 1000);
+
+        // Add some dynamic content
+        setInterval(() => {
+            const shapes = document.querySelectorAll('.shape');
+            shapes.forEach(shape => {
+                const colors = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#feca57'];
+                const randomColor = colors[Math.floor(Math.random() * colors.length)];
+                shape.style.background = randomColor;
+            });
+        }, 2000);
+
+        console.log('Test page loaded and running!');
+    </script>
+</body>
+</html>
