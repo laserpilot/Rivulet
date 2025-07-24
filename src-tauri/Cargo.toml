@@ -40,4 +40,7 @@ raw-window-handle = "0.6"
 
 # Conditional platform dependencies for Spout
 [target.'cfg(target_os = "windows")'.dependencies]
-winapi = { version = "0.3", features = ["d3d11", "dxgi"] }
+winapi = { version = "0.3", features = [
+    "d3d11", "dxgi", "dxgitype", "dxgiformat", 
+    "winuser", "processthreadsapi", "handleapi"
+] }

@@ -15,24 +15,11 @@ mod syphon_simple;
 #[cfg(target_os = "macos")]
 use syphon_simple::SyphonOutput;
 
-// TODO: Windows Spout implementation
+// Windows Spout implementation
 #[cfg(target_os = "windows")]
-struct SpoutOutput {
-    name: String,
-}
-
+mod spout_simple;
 #[cfg(target_os = "windows")]
-impl SpoutOutput {
-    fn new(name: String) -> Self {
-        Self { name }
-    }
-    
-    fn update_frame(&self, _data: &[u8], _width: u32, _height: u32) -> bool {
-        false // Placeholder
-    }
-    
-    fn stop(&self) {}
-}
+use spout_simple::SpoutOutput;
 
 /// Application state for high-performance video sharing
 pub struct VideoShareState {
@@ -68,8 +55,9 @@ impl VideoShareState {
         
         #[cfg(target_os = "windows")]
         {
-            self.video_output = Some(SpoutOutput::new("Tauri Video Share".to_string()));
-            info!("Spout output initialized");
+            // Initialize Spout output with same name as macOS Syphon for consistency
+            self.video_output = Some(SpoutOutput::new("Tauri Video Share - Screen Capture".to_string()));
+            info!("✅ Spout output initialized");
         }
         
         Ok(())

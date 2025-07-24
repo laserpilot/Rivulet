@@ -4,8 +4,10 @@ fn main() {
     // Use tauri-build for Tauri configuration
     tauri_build::build();
     
-    // Only setup additional linking on macOS
-    if env::var("CARGO_CFG_TARGET_OS").unwrap() == "macos" {
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
+    
+    // Setup platform-specific linking
+    if target_os == "macos" {
         println!("cargo:warning=Setting up macOS Syphon framework linking");
         
         // Find the Syphon framework
@@ -43,5 +45,36 @@ fn main() {
         // Tell cargo to recompile if Objective-C sources change
         println!("cargo:rerun-if-changed=src/syphon_bridge.m");
         println!("cargo:rerun-if-changed=src/screencapture_iosurface.m");
+    }
+    
+    // Windows Spout setup
+    if target_os == "windows" {
+        println!("cargo:warning=Setting up Windows Spout C++ compilation");
+        
+        // Compile C++ Spout bridge and screen capture with real Spout2 SDK
+        cc::Build::new()
+            .cpp(true)
+            .file("src/spout_bridge.cpp")
+            .file("src/screencapture_d3d11.cpp") // Add screen capture implementation
+            .include("lib/spout2/include") // Include real Spout2 SDK headers
+            .flag("/std:c++17") // Use C++17 standard
+            .flag("/EHsc") // Enable C++ exception handling
+            .flag_if_supported("/permissive-") // Disable non-conforming code
+            .compile("spout_bridge");
+        
+        // Link Windows system libraries required for D3D11 and DXGI
+        println!("cargo:rustc-link-lib=d3d11");
+        println!("cargo:rustc-link-lib=dxgi");
+        println!("cargo:rustc-link-lib=dxguid");
+        println!("cargo:rustc-link-lib=user32"); // For Win32 API
+        println!("cargo:rustc-link-lib=kernel32"); // For Windows kernel functions
+        
+        // Link real Spout2 SDK
+        println!("cargo:rustc-link-search=native=lib/spout2/lib/x64");
+        println!("cargo:rustc-link-lib=SpoutLibrary"); // Real Spout2 library
+        
+        // Tell cargo to recompile if C++ sources change
+        println!("cargo:rerun-if-changed=src/spout_bridge.cpp");
+        println!("cargo:rerun-if-changed=src/screencapture_d3d11.cpp");
     }
 }
