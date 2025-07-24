@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple Content Window</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+            background: linear-gradient(45deg, #ff6b6b, #4ecdc4, #45b7d1, #96ceb4);
+            background-size: 400% 400%;
+            animation: gradientShift 4s ease infinite;
+            color: white;
+            text-align: center;
+        }
+        
+        @keyframes gradientShift {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+        
+        .content {
+            padding: 50px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        
+        h1 {
+            font-size: 3em;
+            margin-bottom: 30px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 30px;
+            margin: 50px 0;
+        }
+        
+        .feature {
+            background: rgba(255,255,255,0.1);
+            padding: 30px;
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+        }
+        
+        .moving-circle {
+            position: absolute;
+            width: 100px;
+            height: 100px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 50%;
+            animation: float 6s ease-in-out infinite alternate;
+        }
+        
+        .circle1 { top: 10%; left: 10%; animation-delay: 0s; }
+        .circle2 { top: 20%; right: 15%; animation-delay: 2s; }
+        .circle3 { bottom: 15%; left: 20%; animation-delay: 4s; }
+        
+        @keyframes float {
+            from { transform: translateY(0px) scale(1); opacity: 0.7; }
+            to { transform: translateY(-30px) scale(1.1); opacity: 0.9; }
+        }
+        
+        .time {
+            font-size: 1.5em;
+            margin: 20px 0;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <!-- Animated background elements -->
+    <div class="moving-circle circle1"></div>
+    <div class="moving-circle circle2"></div>
+    <div class="moving-circle circle3"></div>
+    
+    <div class="content">
+        <h1>🎥 Rivulet</h1>
+        <p>Professional Video Streaming • Ready for Spout Capture</p>
+        
+        <div class="time" id="currentTime">Loading...</div>
+        
+        <div class="features">
+            <div class="feature">
+                <h3>🚀 High Performance</h3>
+                <p>Hardware accelerated video sharing via Spout</p>
+            </div>
+            <div class="feature">
+                <h3>🎬 Real-time</h3>
+                <p>60 FPS smooth video streaming</p>
+            </div>
+            <div class="feature">
+                <h3>🔧 Cross-platform</h3>
+                <p>Spout on Windows, Syphon on macOS</p>
+            </div>
+        </div>
+        
+        <p>✅ Content window loaded successfully</p>
+        <p style="font-size: 0.9em; opacity: 0.8;">This content is being captured and shared via Spout</p>
+    </div>
+
+    <script>
+        console.log('🌐 Simple Content Window Loaded');
+        
+        // Update time every second
+        function updateTime() {
+            const now = new Date();
+            document.getElementById('currentTime').textContent = now.toLocaleTimeString();
+        }
+        
+        // Start time updates
+        updateTime();
+        setInterval(updateTime, 1000);
+        
+        console.log('✅ Simple content window ready for capture');
+    </script>
+</body>
+</html>

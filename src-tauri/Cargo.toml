@@ -1,11 +1,11 @@
 [package]
-name = "electron-video-share"
+name = "rivulet"
 version = "0.1.0"
 edition = "2021"
 
 # Only build the Tauri binary, not the library
 [[bin]]
-name = "electron-video-share"
+name = "rivulet"
 path = "src/main.rs"
 
 [build-dependencies]

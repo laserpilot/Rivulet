@@ -9,6 +9,14 @@
 #include <memory>
 #include <iostream>
 
+// OpenGL constants for pixel formats
+#ifndef GL_RGBA
+#define GL_RGBA 0x1908
+#endif
+#ifndef GL_BGRA
+#define GL_BGRA 0x80E1
+#endif
+
 // Real Spout2 SDK headers
 #include "SpoutLibrary.h"
 // Note: Using SpoutLibrary interface instead of SpoutSender.h to avoid missing dependencies
@@ -120,9 +128,10 @@ bool spout_server_publish_frame(SpoutServerState* state, const uint8_t* data, ui
     }
 
     try {
-        // Send RGBA image data directly to Spout
+        // Send image data to Spout
         // The Spout library will create/update the sender as needed
-        bool success = state->spout_library->SendImage(data, width, height, GL_RGBA, false);
+        // Note: Using GL_BGRA for DXGI captured frames (Windows native format)
+        bool success = state->spout_library->SendImage(data, width, height, GL_BGRA, false);
         
         if (success) {
             // Update client status

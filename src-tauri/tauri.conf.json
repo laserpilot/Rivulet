@@ -16,7 +16,7 @@
     },
     "bundle": {
       "active": false,
-      "identifier": "com.electron-video-share.app"
+      "identifier": "com.rivulet.app"
     },
     "security": {
       "csp": null

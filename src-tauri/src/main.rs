@@ -48,15 +48,15 @@ impl VideoShareState {
         
         #[cfg(target_os = "macos")]
         {
-            // Initialize Syphon output
-            self.video_output = Some(SyphonOutput::new("Tauri Video Share - Screen Capture".to_string()));
+            // Initialize Syphon output with Rivulet branding
+            self.video_output = Some(SyphonOutput::new("Rivulet".to_string()));
             info!("✅ Syphon output initialized");
         }
         
         #[cfg(target_os = "windows")]
         {
-            // Initialize Spout output with same name as macOS Syphon for consistency
-            self.video_output = Some(SpoutOutput::new("Tauri Video Share - Screen Capture".to_string()));
+            // Initialize Spout output with Rivulet branding
+            self.video_output = Some(SpoutOutput::new("Rivulet".to_string()));
             info!("✅ Spout output initialized");
         }
         
@@ -76,6 +76,25 @@ impl VideoShareState {
                 Ok(())
             } else {
                 Err(anyhow::anyhow!("Failed to start screen capture"))
+            }
+        } else {
+            Err(anyhow::anyhow!("Video output not initialized"))
+        }
+    }
+
+    /// Initialize real screen capture pipeline (Windows)
+    #[cfg(target_os = "windows")]
+    fn initialize_screen_capture(&mut self) -> Result<()> {
+        info!("🎬 Initializing DXGI Desktop Duplication screen capture pipeline");
+        
+        if let Some(video_output) = &self.video_output {
+            // Initialize the screen capture system (DXGI Desktop Duplication)
+            if video_output.start_screen_capture() {
+                self.is_screen_capture_active = true;
+                info!("✅ Windows screen capture pipeline active");
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!("Failed to start Windows screen capture"))
             }
         } else {
             Err(anyhow::anyhow!("Video output not initialized"))
@@ -182,6 +201,29 @@ impl VideoShareState {
         frames_processed
     }
 
+    /// Process real screen capture frames via DXGI (Windows)
+    #[cfg(target_os = "windows")]
+    fn process_screen_capture_frames(&mut self) -> u32 {
+        let mut frames_processed = 0;
+        
+        if self.is_screen_capture_active {
+            if let Some(video_output) = &self.video_output {
+                // Check if new frames are available
+                if video_output.has_screen_frames() {
+                    // Publish the latest screen capture frame
+                    if video_output.publish_screen_capture() {
+                        self.frame_count += 1;
+                        frames_processed = 1;
+                    } else {
+                        log::debug!("📋 No new screen frame to publish (normal behavior)");
+                    }
+                }
+            }
+        }
+        
+        frames_processed
+    }
+
     fn update_frame(&mut self, data: &[u8], width: u32, height: u32) -> bool {
         if let Some(ref video_output) = self.video_output {
             let success = video_output.update_frame(data, width, height);
@@ -218,7 +260,7 @@ impl VideoShareState {
         }
     }
 
-    /// Stop screen capture and cleanup
+    /// Stop screen capture and cleanup (macOS)
     #[cfg(target_os = "macos")]
     fn stop_screen_capture(&mut self) {
         if self.is_screen_capture_active {
@@ -227,6 +269,18 @@ impl VideoShareState {
             }
             self.is_screen_capture_active = false;
             info!("🛑 Screen capture stopped");
+        }
+    }
+
+    /// Stop screen capture and cleanup (Windows)
+    #[cfg(target_os = "windows")]
+    fn stop_screen_capture(&mut self) {
+        if self.is_screen_capture_active {
+            if let Some(video_output) = &self.video_output {
+                video_output.stop_screen_capture();
+            }
+            self.is_screen_capture_active = false;
+            info!("🛑 Windows screen capture stopped");
         }
     }
 }
@@ -363,9 +417,29 @@ fn initialize_screen_capture(
         }
     }
     
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
-        Err("Screen capture only available on macOS".to_string())
+        let mut video_state = state.inner().lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+        
+        match video_state.initialize_screen_capture() {
+            Ok(()) => {
+                info!("✅ Windows screen capture initialized successfully");
+                Ok(VideoResponse {
+                    success: true,
+                    message: "Windows screen capture active (DXGI Desktop Duplication)".to_string(),
+                    frame_count: video_state.frame_count,
+                })
+            }
+            Err(e) => {
+                error!("❌ Failed to initialize Windows screen capture: {}", e);
+                Err(format!("Windows screen capture initialization failed: {}", e))
+            }
+        }
+    }
+    
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        Err("Screen capture only available on macOS and Windows".to_string())
     }
 }
 
@@ -412,9 +486,30 @@ fn process_frames(
         }
     }
     
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
-        Err("Screen capture processing only available on macOS".to_string())
+        let mut video_state = state.inner().lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+        
+        if video_state.is_screen_capture_active {
+            let frames_processed = video_state.process_screen_capture_frames();
+            
+            Ok(VideoResponse {
+                success: true,
+                message: format!("Processed {} Windows screen frames (DXGI)", frames_processed),
+                frame_count: video_state.frame_count,
+            })
+        } else {
+            Ok(VideoResponse {
+                success: false,
+                message: "Windows screen capture mode not active".to_string(),
+                frame_count: video_state.frame_count,
+            })
+        }
+    }
+    
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        Err("Screen capture processing only available on macOS and Windows".to_string())
     }
 }
 
@@ -477,9 +572,61 @@ fn start_continuous_screen_capture(
         })
     }
     
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
-        Err("Continuous screen capture only available on macOS".to_string())
+        let video_state = Arc::clone(state.inner());
+        
+        // Check if already initialized
+        {
+            let mut vs = video_state.lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+            if !vs.is_screen_capture_active {
+                return Err("Windows screen capture not initialized. Call initialize_screen_capture first.".to_string());
+            }
+        }
+        
+        // Spawn background thread for continuous publishing
+        let state_clone = Arc::clone(&video_state);
+        std::thread::spawn(move || {
+            info!("🎬 Starting continuous Windows screen capture publishing thread");
+            
+            loop {
+                let should_continue = {
+                    if let Ok(mut vs) = state_clone.lock() {
+                        if !vs.is_screen_capture_active {
+                            info!("🛑 Windows screen capture no longer active, stopping publishing thread");
+                            break;
+                        }
+                        
+                        // Process screen capture frames continuously
+                        vs.process_screen_capture_frames();
+                        true
+                    } else {
+                        warn!("Failed to lock state in Windows publishing thread");
+                        false
+                    }
+                };
+                
+                if !should_continue {
+                    break;
+                }
+                
+                // Target ~60 FPS (16.67ms per frame)
+                std::thread::sleep(std::time::Duration::from_millis(16));
+            }
+            
+            info!("🏁 Continuous Windows screen capture publishing thread ended");
+        });
+        
+        Ok(VideoResponse {
+            success: true,
+            message: "Continuous Windows screen capture started (60 FPS DXGI)".to_string(),
+            frame_count: 0,
+        })
+    }
+    
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        Err("Continuous screen capture only available on macOS and Windows".to_string())
     }
 }
 
@@ -503,9 +650,22 @@ fn stop_screen_capture(
         })
     }
     
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
-        Err("Screen capture stop only available on macOS".to_string())
+        let mut video_state = state.inner().lock().map_err(|e| format!("Failed to lock state: {}", e))?;
+        
+        video_state.stop_screen_capture();
+        
+        Ok(VideoResponse {
+            success: true,
+            message: "Windows screen capture stopped".to_string(),
+            frame_count: video_state.frame_count,
+        })
+    }
+    
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        Err("Screen capture stop only available on macOS and Windows".to_string())
     }
 }
 
@@ -880,7 +1040,7 @@ fn create_content_window_dynamic(
     let window_builder = tauri::WindowBuilder::new(
         &app,
         "content-window",
-        tauri::WindowUrl::App("content-window.html".into())
+        tauri::WindowUrl::App("content-window-simple.html".into())
     )
     .title(&format!("Web Content - {} ({}x{})", domain, width as i32, height as i32))
     .inner_size(width, height)
@@ -1202,7 +1362,7 @@ fn main() {
         .filter_level(log::LevelFilter::Info)
         .init();
     
-    info!("Starting Tauri Video Share Application");
+    info!("Starting Rivulet Video Sharing Application");
     info!("Platform: {}", std::env::consts::OS);
     
     // Create application state
@@ -1239,11 +1399,11 @@ fn main() {
             reload_content_window           // NEW: Reload content window
         ])
         .setup(|app| {
-            info!("Tauri application setup complete");
+            info!("Rivulet application setup complete");
             Ok(())
         })
         .run(generate_context!())
         .expect("Error while running Tauri application");
     
-    info!("Tauri application shutdown complete");
+    info!("Rivulet application shutdown complete");
 }

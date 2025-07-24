@@ -15,6 +15,12 @@
 
 using Microsoft::WRL::ComPtr;
 
+// Forward declaration for Spout server state
+struct SpoutServerState;
+
+// External function from spout_bridge.cpp
+extern "C" bool spout_server_publish_frame(SpoutServerState* state, const uint8_t* data, uint32_t width, uint32_t height);
+
 // Global capture state - mirrors the macOS implementation pattern
 static ComPtr<ID3D11Device> g_d3d_device = nullptr;
 static ComPtr<ID3D11DeviceContext> g_d3d_context = nullptr;
@@ -131,6 +137,11 @@ bool spout_server_publish_screen_capture(void* spout_server_state) {
         return false;
     }
     
+    if (!spout_server_state) {
+        std::cerr << "❌ ERROR: Invalid Spout server state provided" << std::endl;
+        return false;
+    }
+    
     // Get the latest captured frame
     ComPtr<ID3D11Texture2D> frame_to_publish;
     {
@@ -141,17 +152,68 @@ bool spout_server_publish_screen_capture(void* spout_server_state) {
         frame_to_publish = g_latest_frame;
     }
     
-    // TODO: Publish frame via Spout when SDK is integrated
-    // For now, we'll simulate successful publishing
-    static int frame_count = 0;
-    frame_count++;
-    
-    if (frame_count % 60 == 0) { // Log every 60 frames (1 second at 60fps)
-        std::cout << "📋 Windows screen frame captured and ready for Spout publishing: Frame #" 
-                  << frame_count << std::endl;
+    try {
+        // Get texture description for dimensions
+        D3D11_TEXTURE2D_DESC desc;
+        frame_to_publish->GetDesc(&desc);
+        
+        // Create a staging texture to read the data
+        D3D11_TEXTURE2D_DESC staging_desc = desc;
+        staging_desc.Usage = D3D11_USAGE_STAGING;
+        staging_desc.BindFlags = 0;
+        staging_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        staging_desc.MiscFlags = 0;
+        
+        ComPtr<ID3D11Texture2D> staging_texture;
+        HRESULT hr = g_d3d_device->CreateTexture2D(&staging_desc, nullptr, &staging_texture);
+        if (FAILED(hr)) {
+            std::cerr << "❌ ERROR: Failed to create staging texture for Spout publishing" << std::endl;
+            return false;
+        }
+        
+        // Copy frame to staging texture
+        g_d3d_context->CopyResource(staging_texture.Get(), frame_to_publish.Get());
+        
+        // Map the staging texture to get pixel data
+        D3D11_MAPPED_SUBRESOURCE mapped_resource;
+        hr = g_d3d_context->Map(staging_texture.Get(), 0, D3D11_MAP_READ, 0, &mapped_resource);
+        if (FAILED(hr)) {
+            std::cerr << "❌ ERROR: Failed to map staging texture for reading" << std::endl;
+            return false;
+        }
+        
+        // Note: DXGI captures in BGRA format, but Spout expects RGBA
+        // For now, we'll send the raw data and let Spout handle format conversion
+        // TODO: Add BGRA->RGBA conversion if needed
+        
+        // Publish frame data to Spout
+        bool success = spout_server_publish_frame(
+            static_cast<SpoutServerState*>(spout_server_state),
+            static_cast<const uint8_t*>(mapped_resource.pData),
+            desc.Width,
+            desc.Height
+        );
+        
+        // Unmap the staging texture
+        g_d3d_context->Unmap(staging_texture.Get(), 0);
+        
+        if (success) {
+            static int frame_count = 0;
+            frame_count++;
+            if (frame_count % 60 == 0) { // Log every 60 frames (1 second at 60fps)
+                std::cout << "📋 Windows screen frame published to Spout: " << desc.Width << "x" << desc.Height 
+                          << " Frame #" << frame_count << std::endl;
+            }
+        } else {
+            std::cerr << "❌ ERROR: Failed to publish screen frame to Spout" << std::endl;
+        }
+        
+        return success;
+        
+    } catch (const std::exception& e) {
+        std::cerr << "❌ ERROR: Exception in spout_server_publish_screen_capture: " << e.what() << std::endl;
+        return false;
     }
-    
-    return true;
 }
 
 // Stop screen capture - mirrors syphon_server_stop_screen_capture()

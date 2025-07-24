@@ -75,7 +75,7 @@ impl SpoutOutput {
     /// Create new Spout output server
     /// Mirrors SyphonOutput::new() from syphon_simple.rs
     pub fn new(name: String) -> Self {
-        log::info!("🎬 Creating Spout output: {}", name);
+        log::info!("🎬 Creating Rivulet Spout output: {}", name);
         
         let c_name = CString::new(name.clone()).unwrap_or_else(|_| CString::new("SpoutOutput").unwrap());
         
@@ -299,7 +299,7 @@ impl SpoutOutput {
         }
         
         unsafe {
-            let success = spout_server_publish_screen_capture(self.server_state as *mut c_void);
+            let success = spout_server_publish_screen_capture(self.server_state as *mut SpoutServerState);
             if success {
                 log::debug!("📋 Spout screen frame published successfully");
             }
