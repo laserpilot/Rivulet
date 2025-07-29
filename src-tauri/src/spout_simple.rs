@@ -75,16 +75,22 @@ impl SpoutOutput {
     /// Create new Spout output server
     /// Mirrors SyphonOutput::new() from syphon_simple.rs
     pub fn new(name: String) -> Self {
-        log::info!("🎬 Creating Rivulet Spout output: {}", name);
+        log::info!("🔧 RUST DEBUG: SpoutOutput::new() called with name: {}", name);
         
         let c_name = CString::new(name.clone()).unwrap_or_else(|_| CString::new("SpoutOutput").unwrap());
         
         unsafe {
+            log::info!("🔧 RUST DEBUG: About to call spout_server_create() in C++ bridge...");
+            
             // Create Spout server with no D3D device (bridge will create its own)
             let server_state = spout_server_create(c_name.as_ptr(), std::ptr::null());
             
+            log::info!("🔧 RUST DEBUG: spout_server_create() returned: {}", 
+                      if server_state.is_null() { "NULL" } else { "SUCCESS" });
+            
             if server_state.is_null() {
-                log::error!("❌ Failed to create Spout server: {}", name);
+                log::error!("❌ RUST: spout_server_create() returned NULL - Spout initialization failed in C++ layer");
+                log::error!("❌ RUST: Check console output above for detailed C++ error messages");
                 // Return a "failed" instance that operations will safely fail on
                 return SpoutOutput {
                     server_state: std::ptr::null_mut(),
@@ -95,7 +101,7 @@ impl SpoutOutput {
                 };
             }
             
-            log::info!("✅ Spout server created successfully: {}", name);
+            log::info!("✅ RUST: Spout server created successfully: {}", name);
             
             SpoutOutput {
                 server_state,

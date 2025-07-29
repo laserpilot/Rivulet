@@ -19,14 +19,13 @@
 
 // Real Spout2 SDK headers
 #include "SpoutLibrary.h"
-// Note: Using SpoutLibrary interface instead of SpoutSender.h to avoid missing dependencies
 
 using Microsoft::WRL::ComPtr;
 
 // Define a C-compatible struct for the Spout server state
 // Mirrors SyphonServerState from syphon_bridge.m
 typedef struct {
-    // Real Spout library interface
+    // Real Spout library interface (SPOUTHANDLE is SPOUTLIBRARY*)
     SPOUTHANDLE spout_library;
     // D3D11 device and context for texture operations
     ComPtr<ID3D11Device> d3d_device;
@@ -43,16 +42,21 @@ typedef struct {
 static bool initialize_d3d11_device(SpoutServerState* state);
 static bool create_texture_from_rgba(SpoutServerState* state, const uint8_t* data, uint32_t width, uint32_t height, ID3D11Texture2D** texture);
 static void cleanup_spout_state(SpoutServerState* state);
+static bool test_spout_dll_loading();
 
 extern "C" {
 
 // Create Spout server - mirrors syphon_server_create()
 SpoutServerState* spout_server_create(const char* name, void* d3d_device_ptr) {
+    std::cout << "🔧 SPOUT DEBUG: spout_server_create() called with name: " << (name ? name : "NULL") << std::endl;
+    
     if (!name) {
         std::cerr << "❌ ERROR: spout_server_create received NULL name." << std::endl;
         return nullptr;
     }
 
+    std::cout << "🔧 SPOUT DEBUG: Allocating SpoutServerState..." << std::endl;
+    
     // Allocate server state
     SpoutServerState* state = new SpoutServerState();
     if (!state) {
@@ -60,6 +64,8 @@ SpoutServerState* spout_server_create(const char* name, void* d3d_device_ptr) {
         return nullptr;
     }
 
+    std::cout << "🔧 SPOUT DEBUG: Initializing state structure..." << std::endl;
+    
     // Initialize state
     state->spout_library = nullptr;
     state->name = new std::string(name);
@@ -69,13 +75,17 @@ SpoutServerState* spout_server_create(const char* name, void* d3d_device_ptr) {
     std::cout << "🎬 Creating Spout sender: " << name << std::endl;
 
     // Initialize D3D11 device if not provided
+    std::cout << "🔧 SPOUT DEBUG: Checking D3D11 device setup..." << std::endl;
+    
     if (d3d_device_ptr) {
+        std::cout << "🔧 SPOUT DEBUG: Using provided D3D11 device..." << std::endl;
         // Use provided D3D11 device
         state->d3d_device = static_cast<ID3D11Device*>(d3d_device_ptr);
         state->d3d_device->AddRef();
         state->d3d_device->GetImmediateContext(&state->d3d_context);
         std::cout << "✅ Using provided D3D11 device" << std::endl;
     } else {
+        std::cout << "🔧 SPOUT DEBUG: Creating our own D3D11 device..." << std::endl;
         // Create our own D3D11 device
         if (!initialize_d3d11_device(state)) {
             std::cerr << "❌ ERROR: Failed to initialize D3D11 device" << std::endl;
@@ -85,24 +95,54 @@ SpoutServerState* spout_server_create(const char* name, void* d3d_device_ptr) {
         std::cout << "✅ Created D3D11 device" << std::endl;
     }
 
+    // Test DLL loading first
+    std::cout << "🔧 SPOUT DEBUG: Testing SpoutLibrary.dll loading..." << std::endl;
+    if (!test_spout_dll_loading()) {
+        std::cerr << "❌ ERROR: SpoutLibrary.dll loading test failed" << std::endl;
+        cleanup_spout_state(state);
+        return nullptr;
+    }
+    
     // Initialize real Spout2 library interface
+    std::cout << "🔧 SPOUT DEBUG: Starting Spout2 SDK initialization..." << std::endl;
+    
     try {
-        // Get Spout library instance
+        std::cout << "🔧 SPOUT DEBUG: Attempting to call GetSpout() factory function..." << std::endl;
+        
+        // Get Spout library instance using the factory function
         state->spout_library = GetSpout();
+        
+        std::cout << "🔧 SPOUT DEBUG: GetSpout() returned: " << (state->spout_library ? "SUCCESS" : "NULL") << std::endl;
+        
         if (!state->spout_library) {
-            std::cerr << "❌ ERROR: Failed to create Spout library instance" << std::endl;
+            std::cerr << "❌ ERROR: GetSpout() factory function returned NULL - Spout2 SDK failed to initialize" << std::endl;
+            std::cerr << "❌ This could indicate:" << std::endl;
+            std::cerr << "   - SpoutLibrary.dll not found or not loaded properly" << std::endl;
+            std::cerr << "   - Missing Visual C++ runtime dependencies" << std::endl;
+            std::cerr << "   - Incompatible SpoutLibrary.dll version" << std::endl;
             cleanup_spout_state(state);
             return nullptr;
         }
         
+        std::cout << "🔧 SPOUT DEBUG: Setting sender name to: " << name << std::endl;
         // Set the sender name
         state->spout_library->SetSenderName(name);
         
+        std::cout << "🔧 SPOUT DEBUG: Setting sender format to BGRA..." << std::endl;
+        // Set sender format to BGRA (Windows native DXGI format)
+        state->spout_library->SetSenderFormat(DXGI_FORMAT_B8G8R8A8_UNORM);
+        
         state->initialized = true;
-        std::cout << "✅ Real Spout library interface created successfully: " << name << std::endl;
+        std::cout << "✅ Real Spout2 SDK library created successfully: " << name << std::endl;
+        std::cout << "🔧 SPOUT DEBUG: Spout initialization complete!" << std::endl;
         
     } catch (const std::exception& e) {
-        std::cerr << "❌ ERROR: Exception creating Spout library: " << e.what() << std::endl;
+        std::cerr << "❌ ERROR: C++ Exception during Spout library initialization: " << e.what() << std::endl;
+        cleanup_spout_state(state);
+        return nullptr;
+    } catch (...) {
+        std::cerr << "❌ ERROR: Unknown C++ exception during Spout library initialization" << std::endl;
+        std::cerr << "❌ This suggests a critical failure in SpoutLibrary.dll" << std::endl;
         cleanup_spout_state(state);
         return nullptr;
     }
@@ -128,29 +168,34 @@ bool spout_server_publish_frame(SpoutServerState* state, const uint8_t* data, ui
     }
 
     try {
-        // Send image data to Spout
+        // Send image data to Spout using the real SDK
         // The Spout library will create/update the sender as needed
         // Note: Using GL_BGRA for DXGI captured frames (Windows native format)
+        // bInvert = false since we want to maintain the original orientation
         bool success = state->spout_library->SendImage(data, width, height, GL_BGRA, false);
         
         if (success) {
-            // Update client status
-            state->has_clients = state->spout_library->GetSenderCount() > 0;
+            // Update client status using real Spout2 API
+            int sender_count = state->spout_library->GetSenderCount();
+            state->has_clients = (sender_count > 0);
             
             static int frame_count = 0;
             frame_count++;
             if (frame_count % 60 == 0) { // Log every 60 frames
-                std::cout << "📋 Real Spout frame published: " << width << "x" << height 
-                          << " Frame #" << frame_count << " (Clients: " << (state->has_clients ? "Yes" : "No") << ")" << std::endl;
+                std::cout << "📋 Real Spout2 frame published: " << width << "x" << height 
+                          << " Frame #" << frame_count << " (Connected receivers: " << sender_count << ")" << std::endl;
             }
         } else {
-            std::cerr << "❌ ERROR: Spout library SendImage() failed" << std::endl;
+            std::cerr << "❌ ERROR: Spout2 SDK SendImage() failed for " << width << "x" << height << " frame" << std::endl;
         }
         
         return success;
         
     } catch (const std::exception& e) {
         std::cerr << "❌ ERROR: Exception in spout_server_publish_frame: " << e.what() << std::endl;
+        return false;
+    } catch (...) {
+        std::cerr << "❌ ERROR: Unknown exception in spout_server_publish_frame" << std::endl;
         return false;
     }
 }
@@ -162,30 +207,29 @@ bool spout_server_publish_texture(SpoutServerState* state, void* texture_handle)
         return false;
     }
 
-    // TODO: Implement direct texture publishing when SDK is integrated
-    /*
+    // TODO: Implement direct D3D11 texture publishing with Spout2 SDK
+    // The current SpoutLibrary.h interface primarily supports OpenGL textures and image data
+    // For D3D11 texture support, we would need to either:
+    // 1. Convert D3D11 texture to pixel data and use SendImage()
+    // 2. Use a more advanced Spout2 interface if available
+    
     try {
-        SpoutSender* sender = static_cast<SpoutSender*>(state->spout_sender);
-        ID3D11Texture2D* texture = static_cast<ID3D11Texture2D*>(texture_handle);
+        // For now, log that this is not yet implemented
+        std::cout << "⚠️ Direct D3D11 texture publishing not yet implemented - use SendImage() instead" << std::endl;
         
-        if (!sender->SendTexture(texture)) {
-            std::cerr << "❌ ERROR: Failed to send D3D11 texture via Spout" << std::endl;
-            return false;
-        }
-
-        // Update client status
-        state->has_clients = sender->GetSenderCount() > 0;
+        // In a full implementation, we would:
+        // 1. Map the D3D11 texture to get pixel data
+        // 2. Call state->spout_library->SendImage() with the pixel data
         
-        return true;
+        return false; // Return false to indicate this method is not implemented
+        
     } catch (const std::exception& e) {
         std::cerr << "❌ ERROR: Exception in spout_server_publish_texture: " << e.what() << std::endl;
         return false;
+    } catch (...) {
+        std::cerr << "❌ ERROR: Unknown exception in spout_server_publish_texture" << std::endl;
+        return false;
     }
-    */
-
-    // Placeholder success
-    std::cout << "📋 Spout texture published (placeholder)" << std::endl;
-    return true;
 }
 
 // Check if clients are connected - mirrors syphon_server_has_clients()
@@ -195,13 +239,16 @@ bool spout_server_has_clients(SpoutServerState* state) {
     }
 
     try {
-        // Check if the sender has any connected clients
-        int client_count = state->spout_library->GetSenderCount();
-        state->has_clients = (client_count > 0);
+        // Check if the sender has any connected receivers using real Spout2 API
+        int receiver_count = state->spout_library->GetSenderCount();
+        state->has_clients = (receiver_count > 0);
         return state->has_clients;
         
     } catch (const std::exception& e) {
         std::cerr << "❌ ERROR: Exception in spout_server_has_clients: " << e.what() << std::endl;
+        return false;
+    } catch (...) {
+        std::cerr << "❌ ERROR: Unknown exception in spout_server_has_clients" << std::endl;
         return false;
     }
 }
@@ -215,14 +262,17 @@ void spout_server_stop(SpoutServerState* state) {
     // Cleanup real Spout2 library
     if (state->spout_library) {
         try {
-            // Release the Spout library resources
-            state->spout_library->ReleaseSender();
-            state->spout_library->Release(); // Release the library instance
+            // Release the Spout sender resources using real Spout2 API
+            state->spout_library->ReleaseSender(0); // 0 = immediate release
+            // Note: The SPOUTHANDLE itself is managed by the Spout2 library
+            // We don't need to call Release() on it like a COM object
             state->spout_library = nullptr;
-            std::cout << "✅ Spout library resources released" << std::endl;
+            std::cout << "✅ Spout2 SDK sender resources released" << std::endl;
             
         } catch (const std::exception& e) {
-            std::cerr << "❌ ERROR: Exception stopping Spout library: " << e.what() << std::endl;
+            std::cerr << "❌ ERROR: Exception stopping Spout2 library: " << e.what() << std::endl;
+        } catch (...) {
+            std::cerr << "❌ ERROR: Unknown exception stopping Spout2 library" << std::endl;
         }
     }
 
@@ -234,9 +284,10 @@ void spout_server_stop(SpoutServerState* state) {
 
 // Create test D3D11 texture - mirrors create_test_iosurface()
 void* create_test_d3d11_texture(uint32_t width, uint32_t height) {
-    // This will be implemented when we add screen capture functionality
-    // For now, return nullptr
-    std::cout << "📋 create_test_d3d11_texture called: " << width << "x" << height << " (placeholder)" << std::endl;
+    // TODO: Implement test D3D11 texture creation for zero-copy testing
+    // This would create a D3D11 texture with test pattern data
+    // Currently not needed since we're using SendImage() path
+    std::cout << "📋 create_test_d3d11_texture called: " << width << "x" << height << " (not implemented - use SendImage path)" << std::endl;
     return nullptr;
 }
 
@@ -354,4 +405,55 @@ static void cleanup_spout_state(SpoutServerState* state) {
     // to avoid double-cleanup issues
 
     state->initialized = false;
+}
+
+// Test if SpoutLibrary.dll can be loaded
+static bool test_spout_dll_loading() {
+    std::cout << "🔧 SPOUT DLL TEST: Attempting to load SpoutLibrary.dll..." << std::endl;
+    
+    // Try to load the DLL using Windows LoadLibrary
+    HMODULE spout_dll = LoadLibraryA("SpoutLibrary.dll");
+    if (!spout_dll) {
+        DWORD error = GetLastError();
+        std::cerr << "❌ DLL TEST FAILED: Could not load SpoutLibrary.dll" << std::endl;
+        std::cerr << "❌ Windows Error Code: " << error << std::endl;
+        
+        // Common error codes
+        switch (error) {
+            case 126: // ERROR_MOD_NOT_FOUND
+                std::cerr << "❌ Error 126: The specified module could not be found." << std::endl;
+                std::cerr << "❌ SpoutLibrary.dll is not in the current directory or PATH" << std::endl;
+                break;
+            case 127: // ERROR_PROC_NOT_FOUND  
+                std::cerr << "❌ Error 127: The specified procedure could not be found." << std::endl;
+                break;
+            case 193: // ERROR_BAD_EXE_FORMAT
+                std::cerr << "❌ Error 193: Invalid executable format (32-bit vs 64-bit mismatch)" << std::endl;
+                break;
+            default:
+                std::cerr << "❌ Unknown DLL loading error" << std::endl;
+                break;
+        }
+        return false;
+    }
+    
+    std::cout << "✅ DLL TEST: SpoutLibrary.dll loaded successfully" << std::endl;
+    
+    // Test if GetSpout function exists
+    typedef SPOUTHANDLE (WINAPI *GetSpoutFunc)(VOID);
+    GetSpoutFunc getSpoutFunc = (GetSpoutFunc)GetProcAddress(spout_dll, "GetSpout");
+    
+    if (!getSpoutFunc) {
+        std::cerr << "❌ DLL TEST FAILED: GetSpout function not found in SpoutLibrary.dll" << std::endl;
+        FreeLibrary(spout_dll);
+        return false;
+    }
+    
+    std::cout << "✅ DLL TEST: GetSpout function found in SpoutLibrary.dll" << std::endl;
+    
+    // Clean up test
+    FreeLibrary(spout_dll);
+    std::cout << "✅ DLL TEST: All tests passed - SpoutLibrary.dll is ready" << std::endl;
+    
+    return true;
 }

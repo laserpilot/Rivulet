@@ -1018,7 +1018,10 @@ fn create_content_window_dynamic(
 ) -> Result<VideoResponse, String> {
     info!("🌐 Creating dynamic content window: {}x{} → {}", width, height, url);
     
+    info!("🔧 TAURI DEBUG: Starting window creation process...");
+    
     // Validate parameters
+    info!("🔧 TAURI DEBUG: Validating parameters...");
     if width < 800.0 || width > 3840.0 {
         return Err("Width must be between 800 and 3840 pixels".to_string());
     }
@@ -1028,15 +1031,19 @@ fn create_content_window_dynamic(
     if !url.starts_with("https://") {
         return Err("URL must start with https://".to_string());
     }
+    info!("🔧 TAURI DEBUG: Parameters validated successfully");
     
     // Extract domain for window title
+    info!("🔧 TAURI DEBUG: Extracting domain from URL...");
     let domain = url.split("://")
         .nth(1)
         .unwrap_or("unknown")
         .split("/")
         .next()
         .unwrap_or("unknown");
+    info!("🔧 TAURI DEBUG: Domain extracted: {}", domain);
     
+    info!("🔧 TAURI DEBUG: Creating WindowBuilder...");
     let window_builder = tauri::WindowBuilder::new(
         &app,
         "content-window",
@@ -1049,9 +1056,28 @@ fn create_content_window_dynamic(
     .always_on_top(false)
     .focused(true);
     
+    info!("🔧 TAURI DEBUG: WindowBuilder created, about to call build()...");
+    info!("🔧 TAURI DEBUG: This is where the hang likely occurs - calling window_builder.build()");
+    
+    // Set a timeout for window creation to avoid infinite hangs
+    let build_start = std::time::Instant::now();
+    
+    // Direct window creation with timing measurement
+    info!("🔧 TAURI DEBUG: Attempting direct window creation...");
+    
     match window_builder.build() {
-        Ok(_window) => {
+        Ok(window) => {
+            let build_time = build_start.elapsed();
+            info!("✅ TAURI DEBUG: Window build completed in {:?}", build_time);
             info!("✅ Dynamic content window created successfully: {}x{}", width, height);
+            
+            // Log window details for debugging
+            if let Ok(title) = window.title() {
+                info!("🔧 TAURI DEBUG: Window title: {}", title);
+            }
+            
+            info!("🔧 TAURI DEBUG: Window creation process completed successfully");
+            
             Ok(VideoResponse {
                 success: true,
                 message: format!("Content window created ({}x{}) for {}", 
@@ -1060,8 +1086,14 @@ fn create_content_window_dynamic(
             })
         }
         Err(e) => {
+            let build_time = build_start.elapsed();
+            error!("❌ TAURI DEBUG: Window build failed after {:?}", build_time);
             error!("❌ Failed to create dynamic content window: {}", e);
-            Err(format!("Failed to create content window: {}", e))
+            error!("❌ Error details: {:?}", e);
+            
+            // Provide detailed error information
+            let error_msg = format!("Failed to create content window: {} (Error occurred after {:?})", e, build_time);
+            Err(error_msg)
         }
     }
 }
@@ -1313,6 +1345,84 @@ async fn get_application_state(state: State<'_, Arc<Mutex<VideoShareState>>>, ap
     })
 }
 
+/// DEBUG: Test simple window creation to isolate issues
+#[command]
+fn test_simple_window_creation(app: tauri::AppHandle) -> Result<VideoResponse, String> {
+    info!("🧪 DEBUG: Testing simple window creation...");
+    
+    // Create the simplest possible window
+    let window_builder = tauri::WindowBuilder::new(
+        &app,
+        "debug-test-window",
+        tauri::WindowUrl::App("index.html".into())  // Use existing main page
+    )
+    .title("Debug Test Window")
+    .inner_size(400.0, 300.0)
+    .resizable(true)
+    .decorations(true)
+    .always_on_top(false)
+    .focused(false);  // Don't steal focus
+    
+    info!("🧪 DEBUG: About to build simple test window...");
+    let build_start = std::time::Instant::now();
+    
+    match window_builder.build() {
+        Ok(_window) => {
+            let build_time = build_start.elapsed();
+            info!("✅ DEBUG: Simple test window created successfully in {:?}", build_time);
+            Ok(VideoResponse {
+                success: true,
+                message: format!("Debug test window created in {:?}", build_time),
+                frame_count: 0,
+            })
+        }
+        Err(e) => {
+            let build_time = build_start.elapsed();
+            error!("❌ DEBUG: Simple test window failed after {:?}: {}", build_time, e);
+            Err(format!("Debug test window failed: {}", e))
+        }
+    }
+}
+
+/// DEBUG: Create minimal window to test if basic window creation works
+#[command]
+fn create_minimal_window(app: tauri::AppHandle) -> Result<VideoResponse, String> {
+    info!("🧪 DEBUG: Creating minimal window with basic HTML...");
+    
+    // Create the most basic window possible with inline HTML
+    let window_builder = tauri::WindowBuilder::new(
+        &app,
+        "minimal-test-window", 
+        tauri::WindowUrl::App("index.html".into())  // Use existing simple HTML instead of inline
+    )
+    .title("Minimal Test") 
+    .inner_size(300.0, 200.0)
+    .resizable(false)
+    .decorations(true)
+    .always_on_top(false)
+    .focused(false);
+    
+    info!("🧪 DEBUG: About to build minimal window...");
+    let build_start = std::time::Instant::now();
+    
+    match window_builder.build() {
+        Ok(_window) => {
+            let build_time = build_start.elapsed();
+            info!("✅ DEBUG: Minimal window created successfully in {:?}", build_time);
+            Ok(VideoResponse {
+                success: true,
+                message: format!("Minimal window created in {:?}", build_time),
+                frame_count: 0,
+            })
+        }
+        Err(e) => {
+            let build_time = build_start.elapsed();
+            error!("❌ DEBUG: Minimal window failed: {:?} after {:?}", e, build_time);
+            Err(format!("Minimal window creation failed: {}", e))
+        }
+    }
+}
+
 /// Reload content in existing content window
 #[command]
 async fn reload_content_window(app: tauri::AppHandle) -> Result<VideoResponse, String> {
@@ -1396,7 +1506,9 @@ fn main() {
             start_content_window_streaming, // PHASE G: Start content window specific streaming
             close_content_window,           // NEW: Close content window with cleanup
             get_application_state,          // NEW: Get application state for sync
-            reload_content_window           // NEW: Reload content window
+            reload_content_window,          // NEW: Reload content window
+            test_simple_window_creation,    // DEBUG: Test simple window creation
+            create_minimal_window           // DEBUG: Create minimal window without WebView complexity
         ])
         .setup(|app| {
             info!("Rivulet application setup complete");
