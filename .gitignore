@@ -53,6 +53,10 @@ frameworks/__MACOSX/
 frameworks/syphon-source/
 frameworks_old/
 
+# CEF binary distribution (large files, user must download separately)
+cef/
+!cef/README.md
+
 # Test files and experimental code
 test/
 examples/basic-sharing.js

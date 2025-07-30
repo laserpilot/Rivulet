@@ -4,8 +4,8 @@
 #include "web_layer.h"
 #include "d3d11_device.h"
 
-#include <include/cef_browser.h>
-#include <include/wrapper/cef_helpers.h>
+#include "include/cef_browser.h"
+#include "include/wrapper/cef_helpers.h"
 
 #include <iostream>
 
@@ -15,7 +15,7 @@ WebLayer::WebLayer(std::shared_ptr<D3D11Device> device)
     : d3d11_device_(device)
     , width_(1280)
     , height_(720)
-    , shared_handle_(nullptr)
+    , has_new_frame_(false)
     , initialized_(false) {
 }
 
@@ -35,9 +35,9 @@ bool WebLayer::Initialize(const std::string& url, int width, int height) {
     CefWindowInfo window_info;
     window_info.SetAsWindowless(nullptr);  // Off-screen rendering
     
-    // Enable shared texture support (modern CEF feature)
-    window_info.shared_texture_enabled = true;
-    window_info.external_begin_frame_enabled = true;
+    // Shared texture support disabled for compatibility
+    // window_info.shared_texture_enabled = true;
+    // window_info.external_begin_frame_enabled = true;
     
     // Browser settings
     CefBrowserSettings browser_settings;
@@ -71,8 +71,9 @@ void WebLayer::Shutdown() {
         browser_ = nullptr;
     }
     
-    shared_texture_.Reset();
-    shared_handle_ = nullptr;
+    // Shared texture cleanup disabled for now
+    // shared_texture_.Reset();
+    // shared_handle_ = nullptr;
     
     initialized_ = false;
     std::cout << "Web layer shut down" << std::endl;
@@ -103,35 +104,31 @@ void WebLayer::OnPaint(CefRefPtr<CefBrowser> browser,
                       int width,
                       int height) {
     
-    // This is the fallback method for bitmap rendering
-    // We prefer OnAcceleratedPaint for shared textures
-    std::cout << "OnPaint (bitmap) - " << width << "x" << height << std::endl;
+    if (type != PET_VIEW) return; // Only handle main view, not popup
     
-    // TODO: Handle bitmap fallback if shared textures aren't available
-}
-
-void WebLayer::OnAcceleratedPaint(CefRefPtr<CefBrowser> browser,
-                                 PaintElementType type,
-                                 const RectList& dirtyRects,
-                                 void* shared_handle) {
+    // Resize buffer if needed
+    size_t buffer_size = width * height * 4; // BGRA format
+    if (bitmap_buffer_.size() != buffer_size) {
+        bitmap_buffer_.resize(buffer_size);
+        std::cout << "Resized bitmap buffer for " << width << "x" << height << std::endl;
+    }
     
-    // This is the modern shared texture path - zero copy!
-    std::cout << "OnAcceleratedPaint (shared texture) - Handle: " << shared_handle << std::endl;
-    
-    if (!shared_handle) return;
-    
-    // Store the shared handle for Spout integration
-    shared_handle_ = shared_handle;
-    
-    // Open the shared texture in our D3D11 device
-    if (d3d11_device_) {
-        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
-        if (d3d11_device_->OpenSharedTexture(shared_handle, &texture)) {
-            shared_texture_ = texture;
-            // This texture can now be sent directly to Spout!
+    // Copy the bitmap data
+    if (buffer) {
+        memcpy(bitmap_buffer_.data(), buffer, buffer_size);
+        has_new_frame_ = true;
+        
+        // Log occasionally
+        static int frame_count = 0;
+        frame_count++;
+        if (frame_count % 60 == 0) {
+            std::cout << "CEF frame " << frame_count << " - " << width << "x" << height << std::endl;
         }
     }
 }
+
+// OnAcceleratedPaint removed - not available in this CEF version
+// Will implement shared texture support when available
 
 void WebLayer::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
     CEF_REQUIRE_UI_THREAD();

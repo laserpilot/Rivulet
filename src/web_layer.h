@@ -3,14 +3,16 @@
 
 #pragma once
 
-#include <include/cef_client.h>
-#include <include/cef_render_handler.h>
-#include <include/cef_life_span_handler.h>
-#include <include/cef_load_handler.h>
+#include "include/cef_client.h"
+#include "include/cef_render_handler.h"
+#include "include/cef_life_span_handler.h"
+#include "include/cef_load_handler.h"
 
 #include <d3d11.h>
+#include <wrl/client.h>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace Rivulet {
 
@@ -46,11 +48,12 @@ public:
                  int width,
                  int height) override;
     
-    // Modern CEF shared texture support
-    void OnAcceleratedPaint(CefRefPtr<CefBrowser> browser,
-                           PaintElementType type,
-                           const RectList& dirtyRects,
-                           void* shared_handle) override;
+    // Modern CEF shared texture support (if available)
+    // Note: OnAcceleratedPaint may not be available in all CEF versions
+    // void OnAcceleratedPaint(CefRefPtr<CefBrowser> browser,
+    //                        PaintElementType type,
+    //                        const RectList& dirtyRects,
+    //                        void* shared_handle) override;
 
     // CefLifeSpanHandler methods  
     void OnAfterCreated(CefRefPtr<CefBrowser> browser) override;
@@ -69,8 +72,15 @@ public:
 
     // Accessors
     CefRefPtr<CefBrowser> GetBrowser() const { return browser_; }
-    ID3D11Texture2D* GetSharedTexture() const { return shared_texture_.Get(); }
-    HANDLE GetSharedHandle() const { return shared_handle_; }
+    
+    // Bitmap access
+    const uint8_t* GetBitmapBuffer() const { return bitmap_buffer_.data(); }
+    bool HasNewFrame() const { return has_new_frame_; }
+    void MarkFrameProcessed() { has_new_frame_ = false; }
+    
+    // Shared texture support disabled for now
+    // ID3D11Texture2D* GetSharedTexture() const { return shared_texture_.Get(); }
+    // HANDLE GetSharedHandle() const { return shared_handle_; }
 
 private:
     IMPLEMENT_REFCOUNTING(WebLayer);
@@ -82,9 +92,13 @@ private:
     int width_;
     int height_;
     
-    // Shared texture for zero-copy rendering
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> shared_texture_;
-    HANDLE shared_handle_;
+    // Bitmap buffer for software rendering
+    std::vector<uint8_t> bitmap_buffer_;
+    bool has_new_frame_;
+    
+    // Shared texture for zero-copy rendering (disabled for now)
+    // Microsoft::WRL::ComPtr<ID3D11Texture2D> shared_texture_;
+    // HANDLE shared_handle_;
     
     bool initialized_;
 };

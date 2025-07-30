@@ -16,6 +16,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Use static runtime library to match CEF
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 # Build configuration
 set(CMAKE_CONFIGURATION_TYPES Debug Release)
 if(NOT CMAKE_BUILD_TYPE)
@@ -42,19 +45,29 @@ if(WIN32)
     )
 endif()
 
-# Find CEF
-set(CEF_ROOT "" CACHE PATH "Path to CEF binary distribution")
-if(NOT CEF_ROOT)
-    message(FATAL_ERROR "CEF_ROOT must be set to the CEF binary distribution path")
-endif()
+# CEF Configuration - Use local cef directory
+set(CEF_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/cef")
 
-# Add CEF CMake modules
-set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CEF_ROOT}/cmake")
-find_package(CEF REQUIRED)
+# Set CEF paths
+set(CEF_INCLUDE_DIR "${CEF_ROOT}")
+set(CEF_LIBRARY_DEBUG "${CEF_ROOT}/Debug/libcef.lib")
+set(CEF_LIBRARY_RELEASE "${CEF_ROOT}/Release/libcef.lib")
+set(CEF_DLL_WRAPPER "${CEF_ROOT}/build/libcef_dll_wrapper/Release/libcef_dll_wrapper.lib")
+set(CEF_BINARY_DIR "${CEF_ROOT}/Release")
+set(CEF_RESOURCE_DIR "${CEF_ROOT}/Resources")
 
 # Print CEF information
 message(STATUS "CEF_ROOT: ${CEF_ROOT}")
-message(STATUS "CEF_VERSION: ${CEF_VERSION}")
+message(STATUS "CEF_INCLUDE_DIR: ${CEF_INCLUDE_DIR}")
+message(STATUS "CEF_DLL_WRAPPER: ${CEF_DLL_WRAPPER}")
+
+# Check if CEF files exist
+if(NOT EXISTS ${CEF_DLL_WRAPPER})
+    message(FATAL_ERROR "CEF DLL wrapper not found at: ${CEF_DLL_WRAPPER}")
+endif()
+if(NOT EXISTS ${CEF_LIBRARY_RELEASE})
+    message(FATAL_ERROR "CEF library not found at: ${CEF_LIBRARY_RELEASE}")
+endif()
 
 # Spout2 configuration
 set(SPOUT2_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/lib/Spout2")
@@ -119,20 +132,44 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     src
     ${SPOUT2_INCLUDE_DIR}
     ${SPOUT2_DX_INCLUDE_DIR}
+    ${CEF_INCLUDE_DIR}
 )
 
 # Link libraries
 target_link_libraries(${PROJECT_NAME} PRIVATE
-    libcef_lib
-    libcef_dll_wrapper
+    ${CEF_LIBRARY_RELEASE}
+    ${CEF_DLL_WRAPPER}
     Spout2
     d3d11
     dxgi
+    comctl32.lib
+    crypt32.lib 
+    delayimp.lib
+    gdi32.lib
+    rpcrt4.lib
+    shlwapi.lib
+    wintrust.lib
+    ws2_32.lib
 )
 
 # Copy CEF binary and resource files
-COPY_FILES("${PROJECT_NAME}" "${CEF_BINARY_FILES}" "${CEF_BINARY_DIR}" "$<TARGET_FILE_DIR:${PROJECT_NAME}>")
-COPY_FILES("${PROJECT_NAME}" "${CEF_RESOURCE_FILES}" "${CEF_RESOURCE_DIR}" "$<TARGET_FILE_DIR:${PROJECT_NAME}>")
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    # Copy main CEF DLLs
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CEF_BINARY_DIR}/libcef.dll" "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CEF_BINARY_DIR}/chrome_elf.dll" "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CEF_BINARY_DIR}/d3dcompiler_47.dll" "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CEF_BINARY_DIR}/libEGL.dll" "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CEF_BINARY_DIR}/libGLESv2.dll" "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CEF_BINARY_DIR}/vk_swiftshader.dll" "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CEF_BINARY_DIR}/vulkan-1.dll" "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CEF_BINARY_DIR}/dxcompiler.dll" "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CEF_BINARY_DIR}/dxil.dll" "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CEF_BINARY_DIR}/vk_swiftshader_icd.json" "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CEF_BINARY_DIR}/v8_context_snapshot.bin" "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+    # Copy CEF resources
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CEF_RESOURCE_DIR}" "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+    COMMENT "Copying CEF binaries and resources"
+)
 
 # Print build configuration
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")

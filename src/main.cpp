@@ -2,6 +2,7 @@
 // main.cpp - Application entry point
 
 #include "application.h"
+#include "include/cef_app.h"
 #include <windows.h>
 #include <iostream>
 
@@ -19,19 +20,26 @@ int APIENTRY wWinMain(HINSTANCE hInstance,
     UNREFERENCED_PARAMETER(hPrevInstance);
     UNREFERENCED_PARAMETER(lpCmdLine);
     
-    // Enable console for debugging in debug builds
-#ifdef _DEBUG
+    // Handle CEF subprocesses - this prevents infinite console creation!
+    CefMainArgs main_args(hInstance);
+    int exit_code = CefExecuteProcess(main_args, nullptr, nullptr);
+    if (exit_code >= 0) {
+        // This was a subprocess, exit immediately
+        return exit_code;
+    }
+    
+    // Enable console for debugging - simplified approach
     AllocConsole();
-    freopen_s((FILE**)stdout, "CONOUT$", "w", stdout);
-    freopen_s((FILE**)stderr, "CONOUT$", "w", stderr);
-    freopen_s((FILE**)stdin, "CONIN$", "r", stdin);
-    std::wcout.clear();
-    std::cout.clear();
-    std::wcerr.clear();
-    std::cerr.clear();
-    std::wcin.clear();
-    std::cin.clear();
-#endif
+    
+    // Set console to handle UTF-8 properly
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+    
+    // Redirect stdout, stderr to console
+    FILE* pCout;
+    FILE* pCerr;
+    freopen_s(&pCout, "CONOUT$", "w", stdout);
+    freopen_s(&pCerr, "CONOUT$", "w", stderr);
 
     std::cout << "🚀 Rivulet - Modern CEF-Spout Video Sharing" << std::endl;
     std::cout << "Starting application..." << std::endl;
@@ -58,12 +66,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance,
         return -1;
     }
 
-#ifdef _DEBUG
-    // Keep console open in debug builds
+    // Keep console open
     std::cout << "Press Enter to continue..." << std::endl;
     std::cin.get();
     FreeConsole();
-#endif
 
     return 0;
 }

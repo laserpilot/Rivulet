@@ -6,12 +6,14 @@
 #include "web_layer.h"
 #include "spout_sender.h"
 
-#include <include/cef_app.h>
-#include <include/cef_browser.h>
-#include <include/cef_client.h>
+#include "include/cef_app.h"
+#include "include/cef_browser.h"
+#include "include/cef_client.h"
 
 #include <iostream>
 #include <windowsx.h>
+#include <io.h>
+#include <fcntl.h>
 
 namespace Rivulet {
 
@@ -19,8 +21,8 @@ Application::Application(HINSTANCE instance)
     : instance_(instance)
     , window_(nullptr)
     , window_class_(L"RivuletMainWindow")
-    , window_width_(1280)
-    , window_height_(720)
+    , window_width_(1024)
+    , window_height_(768)
     , initialized_(false)
     , should_exit_(false) {
 }
@@ -30,7 +32,7 @@ Application::~Application() {
 }
 
 bool Application::Initialize() {
-    std::cout << "Initializing Rivulet application..." << std::endl;
+    std::cout << "🚀 Initializing Rivulet application..." << std::endl;
     
     if (!InitializeCEF()) {
         std::cerr << "❌ Failed to initialize CEF" << std::endl;
@@ -47,6 +49,11 @@ bool Application::Initialize() {
         return false;
     }
     
+    if (!InitializeWebLayer()) {
+        std::cerr << "❌ Failed to initialize web layer" << std::endl;
+        return false;
+    }
+    
     if (!InitializeSpout()) {
         std::cerr << "❌ Failed to initialize Spout" << std::endl;
         return false;
@@ -54,6 +61,7 @@ bool Application::Initialize() {
     
     initialized_ = true;
     std::cout << "✅ All components initialized successfully" << std::endl;
+    std::cout << "🌐 Application ready - window should be visible with web content" << std::endl;
     return true;
 }
 
@@ -68,9 +76,11 @@ int Application::Run() {
     UpdateWindow(window_);
     
     MSG msg;
+    int loop_count = 0;
     while (!should_exit_) {
         while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) {
+                std::cout << "Received WM_QUIT message, exiting..." << std::endl;
                 should_exit_ = true;
                 break;
             }
@@ -84,6 +94,12 @@ int Application::Run() {
         
         // Render frame if needed
         OnPaint();
+        
+        // Debug output every 5 seconds
+        loop_count++;
+        if (loop_count % 5000 == 0) {
+            std::cout << "Message loop running... (count: " << loop_count << ")" << std::endl;
+        }
         
         // Small sleep to prevent 100% CPU usage
         Sleep(1);
@@ -122,6 +138,19 @@ bool Application::InitializeCEF() {
     CefSettings settings;
     settings.no_sandbox = true;
     settings.multi_threaded_message_loop = false;  // We'll handle message loop
+    
+    // Set absolute cache path to avoid warnings
+    char exe_path[MAX_PATH];
+    GetModuleFileNameA(nullptr, exe_path, MAX_PATH);
+    std::string exe_dir = exe_path;
+    exe_dir = exe_dir.substr(0, exe_dir.find_last_of("\\/"));
+    
+    std::string cache_path = exe_dir + "\\cache";
+    std::string log_path = exe_dir + "\\cef.log";
+    
+    CefString(&settings.cache_path).FromASCII(cache_path.c_str());
+    CefString(&settings.log_file).FromASCII(log_path.c_str());
+    settings.log_severity = LOGSEVERITY_INFO;
     
     // Initialize CEF
     CefMainArgs main_args(instance_);
@@ -172,7 +201,7 @@ bool Application::InitializeD3D11() {
     std::cout << "Initializing D3D11 device..." << std::endl;
     
     try {
-        d3d11_device_ = std::make_unique<D3D11Device>();
+        d3d11_device_ = std::make_shared<D3D11Device>();
         if (!d3d11_device_->Initialize()) {
             return false;
         }
@@ -181,6 +210,23 @@ bool Application::InitializeD3D11() {
         return true;
     } catch (const std::exception& e) {
         std::cerr << "D3D11 initialization error: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+bool Application::InitializeWebLayer() {
+    std::cout << "Initializing web layer..." << std::endl;
+    
+    try {
+        web_layer_ = std::make_unique<WebLayer>(d3d11_device_);
+        if (!web_layer_->Initialize("https://www.google.com", window_width_, window_height_)) {
+            return false;
+        }
+        
+        std::cout << "✅ Web layer initialized" << std::endl;
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Web layer initialization error: " << e.what() << std::endl;
         return false;
     }
 }
@@ -203,13 +249,18 @@ bool Application::InitializeSpout() {
 }
 
 void Application::OnPaint() {
-    // This will be called for each frame
-    // Eventually will render CEF content and send to Spout
-    
-    // For now, just validate our systems are working
-    if (spout_sender_ && d3d11_device_) {
-        // TODO: Implement actual rendering pipeline
-        // CEF → D3D11 texture → Spout sender
+    // Render CEF content and send to Spout
+    if (web_layer_ && web_layer_->HasNewFrame()) {
+        const uint8_t* bitmap = web_layer_->GetBitmapBuffer();
+        if (bitmap && spout_sender_) {
+            // Send bitmap to Spout (BGRA format, 1024x768)
+            spout_sender_->SendFrame(bitmap, 1024, 768);
+        }
+        
+        // Trigger window repaint to show new content
+        if (window_) {
+            InvalidateRect(window_, nullptr, FALSE);
+        }
     }
 }
 
@@ -223,6 +274,7 @@ void Application::OnResize(int width, int height) {
 }
 
 void Application::OnDestroy() {
+    std::cout << "OnDestroy called - shutting down application" << std::endl;
     should_exit_ = true;
     PostQuitMessage(0);
 }
@@ -232,8 +284,33 @@ LRESULT Application::WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM l
         case WM_PAINT: {
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hwnd, &ps);
-            // Clear background
-            FillRect(hdc, &ps.rcPaint, (HBRUSH)(COLOR_WINDOW + 1));
+            
+            // Draw CEF content if available
+            if (web_layer_ && web_layer_->HasNewFrame()) {
+                const uint8_t* bitmap = web_layer_->GetBitmapBuffer();
+                if (bitmap) {
+                    // Create bitmap info
+                    BITMAPINFO bmi = {};
+                    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+                    bmi.bmiHeader.biWidth = 1024;
+                    bmi.bmiHeader.biHeight = -768; // Negative for top-down
+                    bmi.bmiHeader.biPlanes = 1;
+                    bmi.bmiHeader.biBitCount = 32;
+                    bmi.bmiHeader.biCompression = BI_RGB;
+                    
+                    // Draw the bitmap
+                    StretchDIBits(hdc, 0, 0, window_width_, window_height_,
+                                 0, 0, 1024, 768,
+                                 bitmap, &bmi, DIB_RGB_COLORS, SRCCOPY);
+                } else {
+                    // Clear background if no content
+                    FillRect(hdc, &ps.rcPaint, (HBRUSH)(COLOR_WINDOW + 1));
+                }
+            } else {
+                // Clear background if no content
+                FillRect(hdc, &ps.rcPaint, (HBRUSH)(COLOR_WINDOW + 1));
+            }
+            
             EndPaint(hwnd, &ps);
             return 0;
         }

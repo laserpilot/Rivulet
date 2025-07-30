@@ -38,6 +38,7 @@ private:
     bool InitializeCEF();
     bool InitializeWindow();
     bool InitializeD3D11();
+    bool InitializeWebLayer();
     bool InitializeSpout();
     
     void OnPaint();
@@ -54,7 +55,7 @@ private:
     int window_height_;
     
     // Core components
-    std::unique_ptr<D3D11Device> d3d11_device_;
+    std::shared_ptr<D3D11Device> d3d11_device_;
     std::unique_ptr<WebLayer> web_layer_;
     std::unique_ptr<RivuletSpoutSender> spout_sender_;
     
