@@ -189,7 +189,7 @@ bool Application::InitializeSpout() {
     std::cout << "Initializing Spout sender..." << std::endl;
     
     try {
-        spout_sender_ = std::make_unique<SpoutSender>();
+        spout_sender_ = std::make_unique<RivuletSpoutSender>();
         if (!spout_sender_->Initialize("Rivulet Output")) {
             return false;
         }

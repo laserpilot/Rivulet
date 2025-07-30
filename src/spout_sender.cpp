@@ -6,17 +6,17 @@
 
 namespace Rivulet {
 
-SpoutSender::SpoutSender() 
+RivuletSpoutSender::RivuletSpoutSender() 
     : initialized_(false)
     , last_width_(0)
     , last_height_(0) {
 }
 
-SpoutSender::~SpoutSender() {
+RivuletSpoutSender::~RivuletSpoutSender() {
     Shutdown();
 }
 
-bool SpoutSender::Initialize(const std::string& name) {
+bool RivuletSpoutSender::Initialize(const std::string& name) {
     if (initialized_) return true;
     
     std::cout << "Initializing Spout sender: " << name << std::endl;
@@ -24,7 +24,7 @@ bool SpoutSender::Initialize(const std::string& name) {
     sender_name_ = name;
     
     // Initialize Spout sender
-    if (!spout_.CreateSender(sender_name_.c_str(), 0, 0)) {
+    if (!spout_.SetSenderName(sender_name_.c_str())) {
         std::cerr << "❌ Failed to create Spout sender" << std::endl;
         return false;
     }
@@ -34,7 +34,7 @@ bool SpoutSender::Initialize(const std::string& name) {
     return true;
 }
 
-void SpoutSender::Shutdown() {
+void RivuletSpoutSender::Shutdown() {
     if (!initialized_) return;
     
     spout_.ReleaseSender();
@@ -43,23 +43,20 @@ void SpoutSender::Shutdown() {
     std::cout << "Spout sender shut down: " << sender_name_ << std::endl;
 }
 
-bool SpoutSender::SendTexture(ID3D11Texture2D* texture, uint32_t width, uint32_t height) {
+bool RivuletSpoutSender::SendTexture(ID3D11Texture2D* texture, uint32_t width, uint32_t height) {
     if (!initialized_ || !texture) return false;
     
     // Check if we need to update sender dimensions
     if (width != last_width_ || height != last_height_) {
         std::cout << "Updating Spout sender dimensions: " << width << "x" << height << std::endl;
-        if (!spout_.UpdateSender(sender_name_.c_str(), width, height)) {
-            std::cerr << "❌ Failed to update Spout sender dimensions" << std::endl;
-            return false;
-        }
+        // SpoutDX automatically handles dimension updates
         last_width_ = width;
         last_height_ = height;
     }
     
     // Send the D3D11 texture directly
     // This is the zero-copy path!
-    bool success = spout_.SendTexture(texture, width, height);
+    bool success = spout_.SendTexture(texture);
     
     if (!success) {
         std::cerr << "❌ Failed to send texture via Spout" << std::endl;
@@ -79,22 +76,19 @@ bool SpoutSender::SendTexture(ID3D11Texture2D* texture, uint32_t width, uint32_t
     return true;
 }
 
-bool SpoutSender::SendFrame(const void* pixels, uint32_t width, uint32_t height, GLenum format) {
+bool RivuletSpoutSender::SendFrame(const void* pixels, uint32_t width, uint32_t height) {
     if (!initialized_ || !pixels) return false;
     
     // Check if we need to update sender dimensions
     if (width != last_width_ || height != last_height_) {
         std::cout << "Updating Spout sender dimensions: " << width << "x" << height << std::endl;
-        if (!spout_.UpdateSender(sender_name_.c_str(), width, height)) {
-            std::cerr << "❌ Failed to update Spout sender dimensions" << std::endl;
-            return false;
-        }
+        // SpoutDX automatically handles dimension updates
         last_width_ = width;
         last_height_ = height;
     }
     
     // Send pixel data (fallback method)
-    bool success = spout_.SendImage((const unsigned char*)pixels, width, height, format, false);
+    bool success = spout_.SendImage((const unsigned char*)pixels, width, height);
     
     if (!success) {
         std::cerr << "❌ Failed to send image via Spout" << std::endl;
@@ -114,12 +108,12 @@ bool SpoutSender::SendFrame(const void* pixels, uint32_t width, uint32_t height,
     return true;
 }
 
-bool SpoutSender::HasReceivers() const {
+bool RivuletSpoutSender::HasReceivers() {
     if (!initialized_) return false;
     return spout_.GetSenderCount() > 0;
 }
 
-bool SpoutSender::SetName(const std::string& name) {
+bool RivuletSpoutSender::SetName(const std::string& name) {
     if (name == sender_name_) return true;
     
     // Release current sender
@@ -129,7 +123,7 @@ bool SpoutSender::SetName(const std::string& name) {
     
     // Create new sender with new name
     sender_name_ = name;
-    bool success = spout_.CreateSender(sender_name_.c_str(), last_width_, last_height_);
+    bool success = spout_.SetSenderName(sender_name_.c_str());
     
     if (success) {
         std::cout << "✅ Spout sender renamed to: " << name << std::endl;

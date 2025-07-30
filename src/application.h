@@ -11,7 +11,7 @@
 namespace Rivulet {
     class D3D11Device;
     class WebLayer;
-    class SpoutSender;
+    class RivuletSpoutSender;
 }
 
 namespace Rivulet {
@@ -56,7 +56,7 @@ private:
     // Core components
     std::unique_ptr<D3D11Device> d3d11_device_;
     std::unique_ptr<WebLayer> web_layer_;
-    std::unique_ptr<SpoutSender> spout_sender_;
+    std::unique_ptr<RivuletSpoutSender> spout_sender_;
     
     // State
     bool initialized_;

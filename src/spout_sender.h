@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include <Spout.h>
+#include <SpoutDX.h>
 #include <d3d11.h>
 #include <string>
 #include <memory>
@@ -12,31 +12,31 @@ namespace Rivulet {
 
 class D3D11Device;
 
-class SpoutSender {
+class RivuletSpoutSender {
 public:
-    SpoutSender();
-    ~SpoutSender();
+    RivuletSpoutSender();
+    ~RivuletSpoutSender();
 
     // Non-copyable
-    SpoutSender(const SpoutSender&) = delete;
-    SpoutSender& operator=(const SpoutSender&) = delete;
+    RivuletSpoutSender(const RivuletSpoutSender&) = delete;
+    RivuletSpoutSender& operator=(const RivuletSpoutSender&) = delete;
 
     bool Initialize(const std::string& name);
     void Shutdown();
 
     // Sending methods
     bool SendTexture(ID3D11Texture2D* texture, uint32_t width, uint32_t height);
-    bool SendFrame(const void* pixels, uint32_t width, uint32_t height, GLenum format = GL_BGRA);
+    bool SendFrame(const void* pixels, uint32_t width, uint32_t height);
 
     // Status
-    bool HasReceivers() const;
+    bool HasReceivers();
     std::string GetName() const { return sender_name_; }
 
     // Update sender properties
     bool SetName(const std::string& name);
 
 private:
-    spoutSender spout_;
+    spoutDX spout_;
     std::string sender_name_;
     bool initialized_;
     

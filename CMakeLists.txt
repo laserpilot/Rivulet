@@ -59,6 +59,7 @@ message(STATUS "CEF_VERSION: ${CEF_VERSION}")
 # Spout2 configuration
 set(SPOUT2_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/lib/Spout2")
 set(SPOUT2_INCLUDE_DIR "${SPOUT2_ROOT}/SPOUTSDK/SpoutGL")
+set(SPOUT2_DX_INCLUDE_DIR "${SPOUT2_ROOT}/SPOUTSDK/SpoutDirectX/SpoutDX")
 set(SPOUT2_SOURCES
     ${SPOUT2_INCLUDE_DIR}/Spout.cpp
     ${SPOUT2_INCLUDE_DIR}/SpoutCopy.cpp
@@ -71,11 +72,12 @@ set(SPOUT2_SOURCES
     ${SPOUT2_INCLUDE_DIR}/SpoutSenderNames.cpp
     ${SPOUT2_INCLUDE_DIR}/SpoutSharedMemory.cpp
     ${SPOUT2_INCLUDE_DIR}/SpoutUtils.cpp
+    ${SPOUT2_DX_INCLUDE_DIR}/SpoutDX.cpp
 )
 
 # Create Spout2 library
 add_library(Spout2 STATIC ${SPOUT2_SOURCES})
-target_include_directories(Spout2 PUBLIC ${SPOUT2_INCLUDE_DIR})
+target_include_directories(Spout2 PUBLIC ${SPOUT2_INCLUDE_DIR} ${SPOUT2_DX_INCLUDE_DIR})
 
 # Add necessary preprocessor definitions for Spout2
 target_compile_definitions(Spout2 PRIVATE
@@ -116,6 +118,7 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 target_include_directories(${PROJECT_NAME} PRIVATE
     src
     ${SPOUT2_INCLUDE_DIR}
+    ${SPOUT2_DX_INCLUDE_DIR}
 )
 
 # Link libraries
