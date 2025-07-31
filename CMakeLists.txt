@@ -105,15 +105,11 @@ target_link_libraries(Spout2
         winmm  # For multimedia timer functions
 )
 
-# Rivulet application
+# Rivulet application - Professional CEF browser implementation
 set(RIVULET_SOURCES
-    src/main.cpp
-    src/application.cpp
-    src/application.h
-    src/d3d11_device.cpp
-    src/d3d11_device.h
-    src/web_layer.cpp
-    src/web_layer.h
+    src/rivulet_main.cpp
+    src/rivulet_browser_window.cpp
+    src/rivulet_browser_window.h
     src/spout_sender.cpp
     src/spout_sender.h
 )
