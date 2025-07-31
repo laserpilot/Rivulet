@@ -28,13 +28,19 @@ RivuletBrowserWindow::RivuletBrowserWindow(HINSTANCE instance)
     , reload_hwnd_(nullptr)
     , stop_hwnd_(nullptr)
     , edit_hwnd_(nullptr)
+    , go_hwnd_(nullptr)
     , edit_wndproc_old_(nullptr)
     , font_(nullptr)
     , initialized_(false)
     , is_closing_(false)
     , spout_width_(1024)
     , spout_height_(768)
-    , has_new_frame_(false) {
+    , off_screen_dc_(nullptr)
+    , off_screen_bitmap_(nullptr)
+    , old_bitmap_(nullptr)
+    , bitmap_pixels_(nullptr)
+    , bitmap_width_(0)
+    , bitmap_height_(0) {
 }
 
 RivuletBrowserWindow::~RivuletBrowserWindow() {
@@ -46,10 +52,19 @@ bool RivuletBrowserWindow::Initialize(const Config& config) {
     
     std::cout << "🚀 Initializing Rivulet Browser Window..." << std::endl;
     
-    window_width_ = config.window_width;
-    window_height_ = config.window_height;
     spout_width_ = config.spout_width;
     spout_height_ = config.spout_height;
+    
+    // Calculate window size to match Spout aspect ratio
+    float spout_aspect = (float)spout_width_ / spout_height_;
+    int desired_content_height = config.window_height;
+    int calculated_content_width = (int)(desired_content_height * spout_aspect);
+    
+    // Set window dimensions (content area matches Spout aspect ratio)
+    window_width_ = calculated_content_width;
+    window_height_ = desired_content_height;
+    
+    // Window sized to match Spout aspect ratio
     
     // Initialize Spout sender
     spout_sender_ = std::make_unique<RivuletSpoutSender>();
@@ -80,7 +95,7 @@ bool RivuletBrowserWindow::CreateMainWindow(const Config& config) {
     wcex.lpfnWndProc = WindowProc;
     wcex.hInstance = instance_;
     wcex.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    wcex.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wcex.hbrBackground = NULL;
     wcex.lpszClassName = window_class_.c_str();
     
     if (!RegisterClassExW(&wcex)) {
@@ -157,8 +172,8 @@ void RivuletBrowserWindow::CreateControls() {
     SendMessage(stop_hwnd_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
     x += BUTTON_WIDTH + TOOLBAR_PADDING;
     
-    // URL edit box
-    int edit_width = window_width_ - x - TOOLBAR_PADDING;
+    // URL edit box - leave space for Go button
+    int edit_width = window_width_ - x - TOOLBAR_PADDING - BUTTON_WIDTH - TOOLBAR_PADDING;
     edit_hwnd_ = CreateWindowW(
         L"EDIT", L"",
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_LEFT | ES_AUTOHSCROLL,
@@ -166,6 +181,21 @@ void RivuletBrowserWindow::CreateControls() {
         hwnd_, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_URL_EDIT)), instance_, nullptr
     );
     SendMessage(edit_hwnd_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+    x += edit_width + TOOLBAR_PADDING;
+    
+    // Go button
+    go_hwnd_ = CreateWindowW(
+        L"BUTTON", L"Go",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        x, y, BUTTON_WIDTH, BUTTON_HEIGHT,
+        hwnd_, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_GO)), instance_, nullptr
+    );
+    SendMessage(go_hwnd_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+    
+    // Subclass the edit control to handle Enter key
+    edit_wndproc_old_ = reinterpret_cast<WNDPROC>(SetWindowLongPtr(edit_hwnd_, GWLP_WNDPROC, 
+                                                                  reinterpret_cast<LONG_PTR>(EditProc)));
+    SetWindowLongPtr(edit_hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
     
     std::cout << "✅ Browser controls created" << std::endl;
 }
@@ -226,8 +256,24 @@ void RivuletBrowserWindow::Shutdown() {
     
     spout_sender_.reset();
     
+    // Clean up double buffering resources
+    DestroyOffScreenBitmap();
+    
     initialized_ = false;
     std::cout << "✅ Rivulet browser window shutdown complete" << std::endl;
+}
+
+LRESULT CALLBACK RivuletBrowserWindow::EditProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    RivuletBrowserWindow* window = reinterpret_cast<RivuletBrowserWindow*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
+    
+    if (window && message == WM_KEYDOWN && wParam == VK_RETURN) {
+        // Enter key pressed in URL edit box - navigate to URL
+        window->OnGo();
+        return 0;
+    }
+    
+    // Call original edit control procedure
+    return CallWindowProc(window ? window->edit_wndproc_old_ : DefWindowProc, hwnd, message, wParam, lParam);
 }
 
 LRESULT CALLBACK RivuletBrowserWindow::WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -240,7 +286,7 @@ LRESULT CALLBACK RivuletBrowserWindow::WindowProc(HWND hwnd, UINT message, WPARA
         
         // Set the hwnd_ member immediately
         window->hwnd_ = hwnd;
-        std::cout << "Window created, HWND set to: " << std::hex << hwnd << std::dec << std::endl;
+        // Window created successfully
     } else {
         window = reinterpret_cast<RivuletBrowserWindow*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
     }
@@ -301,8 +347,12 @@ LRESULT RivuletBrowserWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wPar
         case WM_SYSKEYUP:
         case WM_CHAR:
         case WM_SYSCHAR:
-            OnKeyEvent(message, wParam, lParam);
-            return 0;
+            // Only forward to CEF if focus is not on URL edit box
+            if (GetFocus() != edit_hwnd_) {
+                OnKeyEvent(message, wParam, lParam);
+                return 0;
+            }
+            break;
             
         case WM_ERASEBKGND:
             return 1; // Don't erase background
@@ -315,6 +365,57 @@ LRESULT RivuletBrowserWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wPar
             CreateCefBrowser();
             return 0;
             
+        case WM_GETMINMAXINFO: {
+            // Maintain aspect ratio during resize
+            MINMAXINFO* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+            float spout_aspect = (float)spout_width_ / spout_height_;
+            
+            // Set minimum size
+            int min_content_height = 400;
+            int min_content_width = (int)(min_content_height * spout_aspect);
+            mmi->ptMinTrackSize.x = min_content_width;
+            mmi->ptMinTrackSize.y = min_content_height + TOOLBAR_HEIGHT;
+            
+            // Set maximum size  
+            int max_content_height = 1200;
+            int max_content_width = (int)(max_content_height * spout_aspect);
+            mmi->ptMaxTrackSize.x = max_content_width;
+            mmi->ptMaxTrackSize.y = max_content_height + TOOLBAR_HEIGHT;
+            
+            return 0;
+        }
+        
+        case WM_SIZING: {
+            // Enforce aspect ratio during window resize
+            RECT* rect = reinterpret_cast<RECT*>(lParam);
+            float spout_aspect = (float)spout_width_ / spout_height_;
+            
+            int window_width = rect->right - rect->left;
+            int window_height = rect->bottom - rect->top;
+            int content_height = window_height - TOOLBAR_HEIGHT;
+            int content_width = window_width;
+            
+            // Calculate what the width should be for proper aspect ratio
+            int correct_content_width = (int)(content_height * spout_aspect);
+            int correct_window_width = correct_content_width;
+            
+            // Adjust based on which edge is being dragged
+            switch (wParam) {
+                case WMSZ_LEFT:
+                case WMSZ_RIGHT:
+                    // Width is changing - adjust height
+                    rect->bottom = rect->top + (int)(content_width / spout_aspect) + TOOLBAR_HEIGHT;
+                    break;
+                    
+                default:
+                    // Height is changing - adjust width  
+                    rect->right = rect->left + correct_window_width;
+                    break;
+            }
+            
+            return TRUE;
+        }
+            
         default:
             return DefWindowProc(hwnd, message, wParam, lParam);
     }
@@ -324,12 +425,12 @@ void RivuletBrowserWindow::OnCreate(LPCREATESTRUCT lpCreateStruct) {
     CreateControls();
     
     // Delay CEF browser creation until after window is fully ready
-    std::cout << "Posting message to create CEF browser after window initialization..." << std::endl;
+    // Post message to create CEF browser after window initialization
     PostMessage(hwnd_, WM_USER + 1, 0, 0); // Custom message to create browser
 }
 
 void RivuletBrowserWindow::CreateCefBrowser() {
-    std::cout << "Creating CEF browser (delayed)..." << std::endl;
+    // Creating CEF browser
     
     // Validate window handle
     if (!hwnd_ || !IsWindow(hwnd_)) {
@@ -342,8 +443,7 @@ void RivuletBrowserWindow::CreateCefBrowser() {
     RECT client_rect;
     GetClientRect(hwnd_, &client_rect);
     
-    std::cout << "  Parent HWND: " << std::hex << hwnd_ << std::dec << std::endl;
-    std::cout << "  Client rect: " << client_rect.right << "x" << client_rect.bottom << std::endl;
+    // Setting up CEF browser configuration
     
     // Use off-screen rendering for Spout integration
     window_info.SetAsWindowless(hwnd_);
@@ -351,11 +451,10 @@ void RivuletBrowserWindow::CreateCefBrowser() {
     CefBrowserSettings browser_settings;
     browser_settings.windowless_frame_rate = 60;
     
-    // Create browser with startup URL - use Google for real website test
+    // Create browser with startup URL
     std::string startup_url = "https://www.google.com";
     
-    std::cout << "  URL: " << startup_url << std::endl;
-    std::cout << "  Windowless: " << (window_info.windowless_rendering_enabled ? "Yes" : "No") << std::endl;
+    // CEF browser will use off-screen rendering
     
     bool result = CefBrowserHost::CreateBrowser(window_info, client_, startup_url, browser_settings, nullptr, nullptr);
     
@@ -363,7 +462,7 @@ void RivuletBrowserWindow::CreateCefBrowser() {
         std::cerr << "❌ Failed to create CEF browser - CreateBrowser returned false" << std::endl;
         std::cerr << "   This usually means CEF is not properly initialized or the window info is invalid" << std::endl;
     } else {
-        std::cout << "✅ CEF browser creation initiated successfully" << std::endl;
+        // CEF browser creation initiated
     }
 }
 
@@ -376,12 +475,19 @@ void RivuletBrowserWindow::OnSize() {
         browser_->GetHost()->WasResized();
     }
     
-    // Resize URL edit box
-    if (edit_hwnd_) {
-        int edit_width = (rect.right - rect.left) - (BUTTON_WIDTH * 4 + TOOLBAR_PADDING * 6);
+    // Resize URL edit box and Go button
+    if (edit_hwnd_ && go_hwnd_) {
+        int total_button_width = BUTTON_WIDTH * 5 + TOOLBAR_PADDING * 7; // 4 nav buttons + 1 go button + padding
+        int edit_width = (rect.right - rect.left) - total_button_width;
+        
         SetWindowPos(edit_hwnd_, nullptr,
                     BUTTON_WIDTH * 4 + TOOLBAR_PADDING * 5, TOOLBAR_PADDING,
                     edit_width, BUTTON_HEIGHT,
+                    SWP_NOZORDER);
+                    
+        SetWindowPos(go_hwnd_, nullptr,
+                    BUTTON_WIDTH * 4 + TOOLBAR_PADDING * 6 + edit_width, TOOLBAR_PADDING,
+                    BUTTON_WIDTH, BUTTON_HEIGHT,
                     SWP_NOZORDER);
     }
 }
@@ -394,28 +500,64 @@ void RivuletBrowserWindow::OnPaint() {
     RECT toolbar_rect = {0, 0, window_width_, TOOLBAR_HEIGHT};
     FillRect(hdc, &toolbar_rect, (HBRUSH)(COLOR_BTNFACE + 1));
     
-    // Draw CEF content from off-screen buffer
-    if (has_new_frame_ && !display_buffer_.empty()) {
+    // Draw CEF content from off-screen bitmap
+    if (off_screen_dc_ && off_screen_bitmap_ && bitmap_pixels_) {
         RECT content_rect;
         GetClientRect(hwnd_, &content_rect);
         content_rect.top = TOOLBAR_HEIGHT;
         
-        // Create bitmap from buffer data
-        BITMAPINFO bmi = {};
-        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        bmi.bmiHeader.biWidth = spout_width_;
-        bmi.bmiHeader.biHeight = -spout_height_; // Negative for top-down bitmap
-        bmi.bmiHeader.biPlanes = 1;
-        bmi.bmiHeader.biBitCount = 32;
-        bmi.bmiHeader.biCompression = BI_RGB;
+        // Calculate aspect ratio preserving dimensions
+        int content_width = content_rect.right - content_rect.left;
+        int content_height = content_rect.bottom - content_rect.top;
         
-        // Draw the bitmap stretched to fit the content area
-        StretchDIBits(hdc,
-            content_rect.left, content_rect.top,
-            content_rect.right - content_rect.left,
-            content_rect.bottom - content_rect.top,
-            0, 0, spout_width_, spout_height_,
-            display_buffer_.data(), &bmi, DIB_RGB_COLORS, SRCCOPY);
+        float content_aspect = (float)content_width / content_height;
+        float spout_aspect = (float)bitmap_width_ / bitmap_height_;
+        
+        int draw_width, draw_height, draw_x, draw_y;
+        
+        if (content_aspect > spout_aspect) {
+            // Content is wider - fit to width, center vertically
+            draw_width = content_width;
+            draw_height = (int)(content_width / spout_aspect);
+            draw_x = content_rect.left;
+            draw_y = content_rect.top + (content_height - draw_height) / 2;
+        } else {
+            // Content is taller - fit to height, center horizontally
+            draw_height = content_height;
+            draw_width = (int)(content_height * spout_aspect);
+            draw_x = content_rect.left + (content_width - draw_width) / 2;
+            draw_y = content_rect.top;
+        }
+        
+        // Fill background with black bars if needed
+        FillRect(hdc, &content_rect, (HBRUSH)GetStockObject(BLACK_BRUSH));
+        
+        // Configure BITMAPINFO correctly for CEF's 32-bit BGRA top-down buffer
+        BITMAPINFO bmi;
+        memset(&bmi, 0, sizeof(bmi));
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = bitmap_width_;
+        bmi.bmiHeader.biHeight = -bitmap_height_; // Negative = top-down DIB (matches CEF)
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32; // 32 bits per pixel (BGRA)
+        bmi.bmiHeader.biCompression = BI_RGB; // No compression
+        
+        // Set blend mode for proper alpha handling
+        int old_mode = SetStretchBltMode(hdc, HALFTONE);
+        SetBrushOrgEx(hdc, 0, 0, NULL);
+        
+        // Use StretchDIBits with properly configured BITMAPINFO
+        int result = StretchDIBits(hdc,
+                                  draw_x, draw_y, draw_width, draw_height,
+                                  0, 0, bitmap_width_, bitmap_height_,
+                                  bitmap_pixels_, &bmi, DIB_RGB_COLORS, SRCCOPY);
+                                  
+        // Restore blend mode
+        SetStretchBltMode(hdc, old_mode);
+        
+        if (result == GDI_ERROR) {
+            std::cerr << "❌ StretchDIBits failed - Error: " << GetLastError() << std::endl;
+        }
     } else {
         // Clear content area if no frame available
         RECT content_rect = {0, TOOLBAR_HEIGHT, window_width_, window_height_};
@@ -445,6 +587,9 @@ void RivuletBrowserWindow::OnCommand(WPARAM wParam) {
             if (HIWORD(wParam) == EN_CHANGE) {
                 // URL changed
             }
+            break;
+        case ID_GO:
+            OnGo();
             break;
     }
 }
@@ -505,15 +650,40 @@ void RivuletBrowserWindow::OnMouseEvent(UINT message, WPARAM wParam, LPARAM lPar
     if (y < TOOLBAR_HEIGHT) return;
     y -= TOOLBAR_HEIGHT;
     
-    // Scale coordinates to Spout output size
+    // Scale coordinates to Spout output size with aspect ratio correction
     RECT client_rect;
     GetClientRect(hwnd_, &client_rect);
-    int content_height = client_rect.bottom - TOOLBAR_HEIGHT;
     int content_width = client_rect.right;
+    int content_height = client_rect.bottom - TOOLBAR_HEIGHT;
     
     if (content_width > 0 && content_height > 0) {
-        x = (x * spout_width_) / content_width;
-        y = (y * spout_height_) / content_height;
+        // Calculate the actual drawing area (same logic as OnPaint)
+        float content_aspect = (float)content_width / content_height;
+        float spout_aspect = (float)spout_width_ / spout_height_;
+        
+        int draw_width, draw_height, draw_x, draw_y;
+        
+        if (content_aspect > spout_aspect) {
+            draw_width = content_width;
+            draw_height = (int)(content_width / spout_aspect);
+            draw_x = 0;
+            draw_y = (content_height - draw_height) / 2;
+        } else {
+            draw_height = content_height;
+            draw_width = (int)(content_height * spout_aspect);
+            draw_x = (content_width - draw_width) / 2;
+            draw_y = 0;
+        }
+        
+        // Check if click is within the actual content area
+        if (x >= draw_x && x < draw_x + draw_width && y >= draw_y && y < draw_y + draw_height) {
+            // Scale coordinates relative to the drawn content area
+            x = ((x - draw_x) * spout_width_) / draw_width;
+            y = ((y - draw_y) * spout_height_) / draw_height;
+        } else {
+            // Click is in letterbox area - ignore
+            return;
+        }
     }
     
     CefMouseEvent mouse_event;
@@ -528,6 +698,8 @@ void RivuletBrowserWindow::OnMouseEvent(UINT message, WPARAM wParam, LPARAM lPar
     
     switch (message) {
         case WM_LBUTTONDOWN:
+            // Set focus to main window when clicking in content area
+            SetFocus(hwnd_);
             browser_->GetHost()->SendMouseClickEvent(mouse_event, MBT_LEFT, false, 1);
             break;
         case WM_LBUTTONUP:
@@ -589,15 +761,118 @@ void RivuletBrowserWindow::OnKeyEvent(UINT message, WPARAM wParam, LPARAM lParam
     }
 }
 
+// Double buffering implementation
+bool RivuletBrowserWindow::CreateOffScreenBitmap(int width, int height) {
+    // Clean up existing bitmap if dimensions changed
+    if (off_screen_bitmap_ && (bitmap_width_ != width || bitmap_height_ != height)) {
+        DestroyOffScreenBitmap();
+    }
+    
+    // Return early if bitmap already exists with correct dimensions
+    if (off_screen_bitmap_ && bitmap_width_ == width && bitmap_height_ == height) {
+        return true;
+    }
+    
+    // Get main window DC for compatibility
+    HDC main_dc = GetDC(hwnd_);
+    if (!main_dc) {
+        std::cerr << "❌ Failed to get main window DC" << std::endl;
+        return false;
+    }
+    
+    
+    // Create compatible DC for off-screen drawing
+    off_screen_dc_ = CreateCompatibleDC(main_dc);
+    if (!off_screen_dc_) {
+        std::cerr << "❌ Failed to create compatible DC" << std::endl;
+        ReleaseDC(hwnd_, main_dc);
+        return false;
+    }
+    
+    // Create DIB section with explicit RGB format
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = width;
+    bmi.bmiHeader.biHeight = -height; // Negative for top-down bitmap
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32; // 32-bit ARGB format
+    bmi.bmiHeader.biCompression = BI_RGB; // Standard RGB
+    bmi.bmiHeader.biSizeImage = 0; // Can be 0 for BI_RGB
+    
+    off_screen_bitmap_ = CreateDIBSection(off_screen_dc_, &bmi, DIB_RGB_COLORS, &bitmap_pixels_, nullptr, 0);
+    if (!off_screen_bitmap_ || !bitmap_pixels_) {
+        DWORD error = GetLastError();
+        std::cerr << "❌ Failed to create DIB section - Error: " << error << std::endl;
+        DeleteDC(off_screen_dc_);
+        off_screen_dc_ = nullptr;
+        ReleaseDC(hwnd_, main_dc);
+        return false;
+    }
+    
+    
+    // Select bitmap into DC
+    old_bitmap_ = static_cast<HBITMAP>(SelectObject(off_screen_dc_, off_screen_bitmap_));
+    
+    // Store dimensions
+    bitmap_width_ = width;
+    bitmap_height_ = height;
+    
+    ReleaseDC(hwnd_, main_dc);
+    
+    return true;
+}
+
+void RivuletBrowserWindow::DestroyOffScreenBitmap() {
+    if (off_screen_dc_) {
+        // Restore old bitmap before cleanup
+        if (old_bitmap_) {
+            SelectObject(off_screen_dc_, old_bitmap_);
+            old_bitmap_ = nullptr;
+        }
+        DeleteDC(off_screen_dc_);
+        off_screen_dc_ = nullptr;
+    }
+    
+    if (off_screen_bitmap_) {
+        DeleteObject(off_screen_bitmap_);
+        off_screen_bitmap_ = nullptr;
+    }
+    
+    bitmap_pixels_ = nullptr;
+    bitmap_width_ = 0;
+    bitmap_height_ = 0;
+}
+
+void RivuletBrowserWindow::UpdateOffScreenBitmap(const void* cef_buffer, int width, int height) {
+    if (!cef_buffer) return;
+    
+    // Create off-screen bitmap if needed
+    if (!CreateOffScreenBitmap(width, height)) {
+        return;
+    }
+    
+    // Convert from CEF's BGRA to Windows DIB RGB format
+    const uint8_t* src = static_cast<const uint8_t*>(cef_buffer);
+    uint8_t* dst = static_cast<uint8_t*>(bitmap_pixels_);
+    
+    // Windows StretchDIBits with BI_RGB actually expects BGRA format - keep CEF format!
+    size_t pixel_count = width * height;
+    for (size_t i = 0; i < pixel_count; ++i) {
+        // Keep CEF's BGRA format - Windows BI_RGB 32-bit expects this order
+        dst[i * 4 + 0] = src[i * 4 + 0]; // Blue <- CEF Blue
+        dst[i * 4 + 1] = src[i * 4 + 1]; // Green <- CEF Green  
+        dst[i * 4 + 2] = src[i * 4 + 2]; // Red <- CEF Red
+        dst[i * 4 + 3] = 255;            // Alpha - force fully opaque
+    }
+    
+}
+
 // BrowserClient implementation
 void RivuletBrowserWindow::BrowserClient::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
     CEF_REQUIRE_UI_THREAD();
     parent_->browser_ = browser;
     
     std::cout << "✅ CEF browser created successfully (off-screen mode)" << std::endl;
-    std::cout << "   Browser: " << std::hex << browser.get() << std::dec << std::endl;
-    std::cout << "   Parent HWND: " << std::hex << parent_->hwnd_ << std::dec << std::endl;
-    std::cout << "   Spout output: " << parent_->spout_width_ << "x" << parent_->spout_height_ << std::endl;
     
     // For off-screen rendering, no browser window exists
     // All rendering goes through OnPaint callback
@@ -611,7 +886,7 @@ bool RivuletBrowserWindow::BrowserClient::DoClose(CefRefPtr<CefBrowser> browser)
 void RivuletBrowserWindow::BrowserClient::OnBeforeClose(CefRefPtr<CefBrowser> browser) {
     CEF_REQUIRE_UI_THREAD();
     parent_->browser_ = nullptr;
-    std::cout << "CEF browser closed" << std::endl;
+    // CEF browser closed
 }
 
 void RivuletBrowserWindow::BrowserClient::OnLoadingStateChange(CefRefPtr<CefBrowser> browser,
@@ -631,7 +906,7 @@ void RivuletBrowserWindow::BrowserClient::OnLoadEnd(CefRefPtr<CefBrowser> browse
     CEF_REQUIRE_UI_THREAD();
     
     if (frame->IsMain()) {
-        std::cout << "✅ Page loaded: " << frame->GetURL().ToString() << std::endl;
+        // Page loaded successfully
     }
 }
 
@@ -666,17 +941,19 @@ void RivuletBrowserWindow::BrowserClient::OnPaint(CefRefPtr<CefBrowser> browser,
                                                  int height) {
     if (type != PET_VIEW) return;
     
-    // Copy buffer for display in window
     if (buffer) {
-        size_t buffer_size = width * height * 4; // BGRA format
-        parent_->display_buffer_.resize(buffer_size);
-        memcpy(parent_->display_buffer_.data(), buffer, buffer_size);
-        parent_->has_new_frame_ = true;
+        // Update off-screen bitmap for display
+        parent_->UpdateOffScreenBitmap(buffer, width, height);
         
-        // Trigger window repaint
-        InvalidateRect(parent_->hwnd_, nullptr, FALSE);
+        // Throttle window updates to reduce flickering - not every frame needs window redraw
+        static DWORD last_window_update = 0;
+        DWORD current_time = GetTickCount();
+        if (current_time - last_window_update > 33) { // ~30fps window updates max
+            InvalidateRect(parent_->hwnd_, nullptr, FALSE);
+            last_window_update = current_time;
+        }
         
-        // Send frame to Spout
+        // Send frame to Spout (maintains perfect 60fps quality)
         if (parent_->spout_sender_) {
             parent_->spout_sender_->SendFrame(static_cast<const uint8_t*>(buffer), width, height);
         }
@@ -685,7 +962,7 @@ void RivuletBrowserWindow::BrowserClient::OnPaint(CefRefPtr<CefBrowser> browser,
         static int frame_count = 0;
         frame_count++;
         if (frame_count % 60 == 0) {
-            std::cout << "Frame " << frame_count << " - " << width << "x" << height << " rendered" << std::endl;
+            // Frame rendered and sent to Spout
         }
     }
 }

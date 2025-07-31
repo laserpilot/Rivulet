@@ -82,11 +82,15 @@ int APIENTRY wWinMain(HINSTANCE hInstance,
         
         Rivulet::RivuletBrowserWindow::Config config;
         config.startup_url = "https://www.google.com";
-        config.window_width = 1024;
-        config.window_height = 768;
-        config.spout_width = 1920;   // Configurable Spout output size
-        config.spout_height = 1080;  // Can be different from window size
+        config.window_height = 600;  // Desired window content height 
+        // window_width will be calculated to match spout aspect ratio
+        config.spout_width = 1920;   // High-resolution Spout output
+        config.spout_height = 1080;  // Independent of window display size
         config.window_title = "Rivulet - Professional Browser";
+        
+        std::cout << "🎯 Configuration:" << std::endl;
+        std::cout << "   Spout Output: " << config.spout_width << "x" << config.spout_height << std::endl;
+        std::cout << "   Window will be sized to match aspect ratio" << std::endl;
         
         if (!browser_window->Initialize(config)) {
             std::cerr << "❌ Failed to initialize browser window" << std::endl;
