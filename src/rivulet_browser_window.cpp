@@ -41,10 +41,16 @@ RivuletBrowserWindow::RivuletBrowserWindow(HINSTANCE instance)
     , bitmap_pixels_(nullptr)
     , bitmap_width_(0)
     , bitmap_height_(0) {
+    
+    // Initialize critical section for thread synchronization
+    InitializeCriticalSection(&bitmap_lock_);
 }
 
 RivuletBrowserWindow::~RivuletBrowserWindow() {
     Shutdown();
+    
+    // Clean up critical section
+    DeleteCriticalSection(&bitmap_lock_);
 }
 
 bool RivuletBrowserWindow::Initialize(const Config& config) {
@@ -353,6 +359,14 @@ LRESULT RivuletBrowserWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wPar
                 return 0;
             }
             break;
+
+    case WM_TIMER: {
+        // Only invalidate the CEF content area, not the entire window.
+        // This prevents the toolbar and controls from flickering.
+        RECT cef_rect = {0, TOOLBAR_HEIGHT, window_width_, window_height_};
+        InvalidateRect(hwnd_, &cef_rect, FALSE);
+        return 0;
+    }
             
         case WM_ERASEBKGND:
             return 1; // Don't erase background
@@ -427,6 +441,9 @@ void RivuletBrowserWindow::OnCreate(LPCREATESTRUCT lpCreateStruct) {
     // Delay CEF browser creation until after window is fully ready
     // Post message to create CEF browser after window initialization
     PostMessage(hwnd_, WM_USER + 1, 0, 0); // Custom message to create browser
+
+    // Start a timer to drive UI updates at a consistent 60 FPS
+    SetTimer(hwnd_, 1, 16, nullptr); // Timer ID 1, ~16ms interval
 }
 
 void RivuletBrowserWindow::CreateCefBrowser() {
@@ -470,10 +487,9 @@ void RivuletBrowserWindow::OnSize() {
     RECT rect;
     GetClientRect(hwnd_, &rect);
     
-    // For off-screen rendering, notify CEF of size change
-    if (browser_) {
-        browser_->GetHost()->WasResized();
-    }
+    // NOTE: Do NOT call WasResized() for off-screen rendering!
+    // CEF renders at fixed size (spout_width_ x spout_height_) regardless of window size.
+    // Calling WasResized() creates a contradiction with GetViewRect() and causes flickering.
     
     // Resize URL edit box and Go button
     if (edit_hwnd_ && go_hwnd_) {
@@ -500,7 +516,10 @@ void RivuletBrowserWindow::OnPaint() {
     RECT toolbar_rect = {0, 0, window_width_, TOOLBAR_HEIGHT};
     FillRect(hdc, &toolbar_rect, (HBRUSH)(COLOR_BTNFACE + 1));
     
-    // Draw CEF content from off-screen bitmap
+    // Draw CEF content from off-screen bitmap  
+    // Lock bitmap access - UI thread reading
+    EnterCriticalSection(&bitmap_lock_);
+    
     if (off_screen_dc_ && off_screen_bitmap_ && bitmap_pixels_) {
         RECT content_rect;
         GetClientRect(hwnd_, &content_rect);
@@ -529,40 +548,61 @@ void RivuletBrowserWindow::OnPaint() {
             draw_y = content_rect.top;
         }
         
-        // Fill background with black bars if needed
-        FillRect(hdc, &content_rect, (HBRUSH)GetStockObject(BLACK_BRUSH));
+        // Use high-quality StretchBlt for direct DC-to-DC blitting (superior to StretchDIBits)
+        SetStretchBltMode(hdc, HALFTONE); // High-quality stretch mode for smooth scaling
+        SetBrushOrgEx(hdc, 0, 0, NULL);   // Set brush origin for proper dithering
         
-        // Configure BITMAPINFO correctly for CEF's 32-bit BGRA top-down buffer
-        BITMAPINFO bmi;
-        memset(&bmi, 0, sizeof(bmi));
-        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        bmi.bmiHeader.biWidth = bitmap_width_;
-        bmi.bmiHeader.biHeight = -bitmap_height_; // Negative = top-down DIB (matches CEF)
-        bmi.bmiHeader.biPlanes = 1;
-        bmi.bmiHeader.biBitCount = 32; // 32 bits per pixel (BGRA)
-        bmi.bmiHeader.biCompression = BI_RGB; // No compression
+        // Paint only the letterbox bars (not the entire content area) to avoid flicker
+        HBRUSH black_brush = (HBRUSH)GetStockObject(BLACK_BRUSH);
         
-        // Set blend mode for proper alpha handling
-        int old_mode = SetStretchBltMode(hdc, HALFTONE);
-        SetBrushOrgEx(hdc, 0, 0, NULL);
+        // Top letterbox bar (if any)
+        if (draw_y > content_rect.top) {
+            RECT top_bar = {content_rect.left, content_rect.top, content_rect.right, draw_y};
+            FillRect(hdc, &top_bar, black_brush);
+        }
         
-        // Use StretchDIBits with properly configured BITMAPINFO
-        int result = StretchDIBits(hdc,
-                                  draw_x, draw_y, draw_width, draw_height,
-                                  0, 0, bitmap_width_, bitmap_height_,
-                                  bitmap_pixels_, &bmi, DIB_RGB_COLORS, SRCCOPY);
-                                  
-        // Restore blend mode
-        SetStretchBltMode(hdc, old_mode);
+        // Bottom letterbox bar (if any)
+        if (draw_y + draw_height < content_rect.bottom) {
+            RECT bottom_bar = {content_rect.left, draw_y + draw_height, content_rect.right, content_rect.bottom};
+            FillRect(hdc, &bottom_bar, black_brush);
+        }
         
-        if (result == GDI_ERROR) {
-            std::cerr << "❌ StretchDIBits failed - Error: " << GetLastError() << std::endl;
+        // Left letterbox bar (if any)
+        if (draw_x > content_rect.left) {
+            RECT left_bar = {content_rect.left, draw_y, draw_x, draw_y + draw_height};
+            FillRect(hdc, &left_bar, black_brush);
+        }
+        
+        // Right letterbox bar (if any)
+        if (draw_x + draw_width < content_rect.right) {
+            RECT right_bar = {draw_x + draw_width, draw_y, content_rect.right, draw_y + draw_height};
+            FillRect(hdc, &right_bar, black_brush);
+        }
+        
+        // Now, draw the CEF content on top of the prepared background
+        BOOL result = StretchBlt(hdc, 
+                               draw_x, draw_y, draw_width, draw_height,
+                               off_screen_dc_, 
+                               0, 0, bitmap_width_, bitmap_height_,
+                               SRCCOPY);
+
+        // Send frame to Spout from the UI thread to avoid blocking the CEF render thread.
+        // This synchronizes the preview window with the Spout output.
+        if (spout_sender_) {
+            spout_sender_->SendFrame(static_cast<const uint8_t*>(bitmap_pixels_), bitmap_width_, bitmap_height_);
+        }
+
+        if (!result) {
+            std::cerr << "❌ StretchBlt failed - Error: " << GetLastError() << std::endl;
         }
     } else {
         // Clear content area if no frame available
         RECT content_rect = {0, TOOLBAR_HEIGHT, window_width_, window_height_};
         FillRect(hdc, &content_rect, (HBRUSH)(COLOR_WINDOW + 1));
     }
+    
+    // Unlock bitmap access
+    LeaveCriticalSection(&bitmap_lock_);
     
     EndPaint(hwnd_, &ps);
 }
@@ -595,6 +635,9 @@ void RivuletBrowserWindow::OnCommand(WPARAM wParam) {
 }
 
 void RivuletBrowserWindow::OnDestroy() {
+    // Clean up the UI timer
+    KillTimer(hwnd_, 1);
+
     is_closing_ = true;
     PostQuitMessage(0);
 }
@@ -823,6 +866,9 @@ bool RivuletBrowserWindow::CreateOffScreenBitmap(int width, int height) {
 }
 
 void RivuletBrowserWindow::DestroyOffScreenBitmap() {
+    // Lock to prevent race conditions during resource destruction
+    EnterCriticalSection(&bitmap_lock_);
+
     if (off_screen_dc_) {
         // Restore old bitmap before cleanup
         if (old_bitmap_) {
@@ -841,13 +887,19 @@ void RivuletBrowserWindow::DestroyOffScreenBitmap() {
     bitmap_pixels_ = nullptr;
     bitmap_width_ = 0;
     bitmap_height_ = 0;
+
+    LeaveCriticalSection(&bitmap_lock_);
 }
 
 void RivuletBrowserWindow::UpdateOffScreenBitmap(const void* cef_buffer, int width, int height) {
     if (!cef_buffer) return;
     
+    // Lock bitmap access - CEF render thread writing
+    EnterCriticalSection(&bitmap_lock_);
+    
     // Create off-screen bitmap if needed
     if (!CreateOffScreenBitmap(width, height)) {
+        LeaveCriticalSection(&bitmap_lock_);
         return;
     }
     
@@ -855,16 +907,12 @@ void RivuletBrowserWindow::UpdateOffScreenBitmap(const void* cef_buffer, int wid
     const uint8_t* src = static_cast<const uint8_t*>(cef_buffer);
     uint8_t* dst = static_cast<uint8_t*>(bitmap_pixels_);
     
-    // Windows StretchDIBits with BI_RGB actually expects BGRA format - keep CEF format!
-    size_t pixel_count = width * height;
-    for (size_t i = 0; i < pixel_count; ++i) {
-        // Keep CEF's BGRA format - Windows BI_RGB 32-bit expects this order
-        dst[i * 4 + 0] = src[i * 4 + 0]; // Blue <- CEF Blue
-        dst[i * 4 + 1] = src[i * 4 + 1]; // Green <- CEF Green  
-        dst[i * 4 + 2] = src[i * 4 + 2]; // Red <- CEF Red
-        dst[i * 4 + 3] = 255;            // Alpha - force fully opaque
-    }
+    // Use memcpy for a highly efficient, direct memory copy.
+    // The manual pixel-by-pixel loop is extremely slow and causes lock contention.
+    memcpy(dst, src, width * height * 4);
     
+    // Unlock bitmap access
+    LeaveCriticalSection(&bitmap_lock_);
 }
 
 // BrowserClient implementation
@@ -945,25 +993,8 @@ void RivuletBrowserWindow::BrowserClient::OnPaint(CefRefPtr<CefBrowser> browser,
         // Update off-screen bitmap for display
         parent_->UpdateOffScreenBitmap(buffer, width, height);
         
-        // Throttle window updates to reduce flickering - not every frame needs window redraw
-        static DWORD last_window_update = 0;
-        DWORD current_time = GetTickCount();
-        if (current_time - last_window_update > 33) { // ~30fps window updates max
-            InvalidateRect(parent_->hwnd_, nullptr, FALSE);
-            last_window_update = current_time;
-        }
-        
-        // Send frame to Spout (maintains perfect 60fps quality)
-        if (parent_->spout_sender_) {
-            parent_->spout_sender_->SendFrame(static_cast<const uint8_t*>(buffer), width, height);
-        }
-        
-        // Debug output occasionally
-        static int frame_count = 0;
-        frame_count++;
-        if (frame_count % 60 == 0) {
-            // Frame rendered and sent to Spout
-        }
+        // DO NOT invalidate here. The UI thread's WM_TIMER is now responsible
+        // for driving repaints at a stable rate, decoupling the threads.
     }
 }
 
