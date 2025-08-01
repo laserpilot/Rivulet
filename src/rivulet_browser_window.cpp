@@ -10,6 +10,8 @@
 
 #include <iostream>
 #include <windowsx.h>
+#include <fstream>
+#include <shlobj.h>
 
 namespace Rivulet {
 
@@ -30,9 +32,11 @@ RivuletBrowserWindow::RivuletBrowserWindow(HINSTANCE instance)
     , edit_hwnd_(nullptr)
     , go_hwnd_(nullptr)
     , edit_wndproc_old_(nullptr)
+    , resolution_wndproc_old_(nullptr)
     , font_(nullptr)
     , initialized_(false)
     , is_closing_(false)
+    , toolbar_visible_(true)
     , spout_width_(1024)
     , spout_height_(768)
     , off_screen_dc_(nullptr)
@@ -60,6 +64,9 @@ bool RivuletBrowserWindow::Initialize(const Config& config) {
     
     spout_width_ = config.spout_width;
     spout_height_ = config.spout_height;
+    
+    // Load saved settings (may override config defaults)
+    LoadSettings();
     
     // Calculate window size to match Spout aspect ratio
     float spout_aspect = (float)spout_width_ / spout_height_;
@@ -178,7 +185,37 @@ void RivuletBrowserWindow::CreateControls() {
     SendMessage(stop_hwnd_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
     x += BUTTON_WIDTH + TOOLBAR_PADDING;
     
-    // URL edit box - leave space for Go button
+    // Resolution dropdown (editable for custom resolutions)
+    resolution_hwnd_ = CreateWindowW(
+        L"COMBOBOX", L"",
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWN | WS_VSCROLL,
+        x, y, RESOLUTION_WIDTH, 200, // Height includes dropdown area
+        hwnd_, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_RESOLUTION)), instance_, nullptr
+    );
+    SendMessage(resolution_hwnd_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+    
+    // Populate resolution dropdown with common resolutions
+    SendMessage(resolution_hwnd_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"1920x1080"));
+    SendMessage(resolution_hwnd_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"1280x720"));
+    SendMessage(resolution_hwnd_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"1024x768"));
+    SendMessage(resolution_hwnd_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"800x600"));
+    SendMessage(resolution_hwnd_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"3840x2160"));
+    SendMessage(resolution_hwnd_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"2500x2500"));
+    
+    // Set current resolution as selected (may be from loaded settings)
+    wchar_t current_res[32];
+    swprintf_s(current_res, L"%dx%d", spout_width_, spout_height_);
+    int current_index = static_cast<int>(SendMessage(resolution_hwnd_, CB_FINDSTRINGEXACT, -1, reinterpret_cast<LPARAM>(current_res)));
+    if (current_index != CB_ERR) {
+        SendMessage(resolution_hwnd_, CB_SETCURSEL, current_index, 0);
+    } else {
+        // Custom resolution not in dropdown - set as text directly
+        SetWindowTextW(resolution_hwnd_, current_res);
+    }
+    
+    x += RESOLUTION_WIDTH + TOOLBAR_PADDING;
+    
+    // URL edit box - leave space for Go button and resolution dropdown
     int edit_width = window_width_ - x - TOOLBAR_PADDING - BUTTON_WIDTH - TOOLBAR_PADDING;
     edit_hwnd_ = CreateWindowW(
         L"EDIT", L"",
@@ -202,6 +239,14 @@ void RivuletBrowserWindow::CreateControls() {
     edit_wndproc_old_ = reinterpret_cast<WNDPROC>(SetWindowLongPtr(edit_hwnd_, GWLP_WNDPROC, 
                                                                   reinterpret_cast<LONG_PTR>(EditProc)));
     SetWindowLongPtr(edit_hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+    
+    // Subclass the resolution combobox edit control to handle Enter key
+    HWND resolution_edit = FindWindowEx(resolution_hwnd_, nullptr, L"EDIT", nullptr);
+    if (resolution_edit) {
+        resolution_wndproc_old_ = reinterpret_cast<WNDPROC>(SetWindowLongPtr(resolution_edit, GWLP_WNDPROC,
+                                                                           reinterpret_cast<LONG_PTR>(ResolutionProc)));
+        SetWindowLongPtr(resolution_edit, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+    }
     
     std::cout << "✅ Browser controls created" << std::endl;
 }
@@ -280,6 +325,19 @@ LRESULT CALLBACK RivuletBrowserWindow::EditProc(HWND hwnd, UINT message, WPARAM 
     
     // Call original edit control procedure
     return CallWindowProc(window ? window->edit_wndproc_old_ : DefWindowProc, hwnd, message, wParam, lParam);
+}
+
+LRESULT CALLBACK RivuletBrowserWindow::ResolutionProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    RivuletBrowserWindow* window = reinterpret_cast<RivuletBrowserWindow*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
+    
+    if (window && message == WM_KEYDOWN && wParam == VK_RETURN) {
+        // Enter key pressed in resolution edit box - change resolution
+        window->OnResolutionChange();
+        return 0;
+    }
+    
+    // Call original edit control procedure
+    return CallWindowProc(window ? window->resolution_wndproc_old_ : DefWindowProc, hwnd, message, wParam, lParam);
 }
 
 LRESULT CALLBACK RivuletBrowserWindow::WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -363,7 +421,8 @@ LRESULT RivuletBrowserWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wPar
     case WM_TIMER: {
         // Only invalidate the CEF content area, not the entire window.
         // This prevents the toolbar and controls from flickering.
-        RECT cef_rect = {0, TOOLBAR_HEIGHT, window_width_, window_height_};
+        int toolbar_height = toolbar_visible_ ? TOOLBAR_HEIGHT : 0;
+        RECT cef_rect = {0, toolbar_height, window_width_, window_height_};
         InvalidateRect(hwnd_, &cef_rect, FALSE);
         return 0;
     }
@@ -491,18 +550,22 @@ void RivuletBrowserWindow::OnSize() {
     // CEF renders at fixed size (spout_width_ x spout_height_) regardless of window size.
     // Calling WasResized() creates a contradiction with GetViewRect() and causes flickering.
     
-    // Resize URL edit box and Go button
-    if (edit_hwnd_ && go_hwnd_) {
-        int total_button_width = BUTTON_WIDTH * 5 + TOOLBAR_PADDING * 7; // 4 nav buttons + 1 go button + padding
-        int edit_width = (rect.right - rect.left) - total_button_width;
+    // Resize URL edit box and Go button (accounting for resolution dropdown)
+    if (edit_hwnd_ && go_hwnd_ && resolution_hwnd_) {
+        // Calculate total fixed width: 4 nav buttons + resolution dropdown + go button + padding
+        int total_fixed_width = BUTTON_WIDTH * 5 + RESOLUTION_WIDTH + TOOLBAR_PADDING * 8;
+        int edit_width = (rect.right - rect.left) - total_fixed_width;
+        
+        // Position after: Back + Forward + Reload + Stop + Resolution
+        int edit_x = BUTTON_WIDTH * 4 + RESOLUTION_WIDTH + TOOLBAR_PADDING * 6;
         
         SetWindowPos(edit_hwnd_, nullptr,
-                    BUTTON_WIDTH * 4 + TOOLBAR_PADDING * 5, TOOLBAR_PADDING,
+                    edit_x, TOOLBAR_PADDING,
                     edit_width, BUTTON_HEIGHT,
                     SWP_NOZORDER);
                     
         SetWindowPos(go_hwnd_, nullptr,
-                    BUTTON_WIDTH * 4 + TOOLBAR_PADDING * 6 + edit_width, TOOLBAR_PADDING,
+                    edit_x + edit_width + TOOLBAR_PADDING, TOOLBAR_PADDING,
                     BUTTON_WIDTH, BUTTON_HEIGHT,
                     SWP_NOZORDER);
     }
@@ -512,9 +575,12 @@ void RivuletBrowserWindow::OnPaint() {
     PAINTSTRUCT ps;
     HDC hdc = BeginPaint(hwnd_, &ps);
     
-    // Draw toolbar background
-    RECT toolbar_rect = {0, 0, window_width_, TOOLBAR_HEIGHT};
-    FillRect(hdc, &toolbar_rect, (HBRUSH)(COLOR_BTNFACE + 1));
+    // Draw toolbar background (only if visible)
+    int toolbar_height = toolbar_visible_ ? TOOLBAR_HEIGHT : 0;
+    if (toolbar_visible_) {
+        RECT toolbar_rect = {0, 0, window_width_, TOOLBAR_HEIGHT};
+        FillRect(hdc, &toolbar_rect, (HBRUSH)(COLOR_BTNFACE + 1));
+    }
     
     // Draw CEF content from off-screen bitmap  
     // Lock bitmap access - UI thread reading
@@ -523,7 +589,7 @@ void RivuletBrowserWindow::OnPaint() {
     if (off_screen_dc_ && off_screen_bitmap_ && bitmap_pixels_) {
         RECT content_rect;
         GetClientRect(hwnd_, &content_rect);
-        content_rect.top = TOOLBAR_HEIGHT;
+        content_rect.top = toolbar_height;
         
         // Calculate aspect ratio preserving dimensions
         int content_width = content_rect.right - content_rect.left;
@@ -631,12 +697,21 @@ void RivuletBrowserWindow::OnCommand(WPARAM wParam) {
         case ID_GO:
             OnGo();
             break;
+        case ID_RESOLUTION:
+            if (HIWORD(wParam) == CBN_CLOSEUP) {
+                // Dropdown closed - check if selection actually changed
+                OnResolutionChange();
+            }
+            break;
     }
 }
 
 void RivuletBrowserWindow::OnDestroy() {
     // Clean up the UI timer
     KillTimer(hwnd_, 1);
+    
+    // Save final settings before closing
+    SaveSettings();
 
     is_closing_ = true;
     PostQuitMessage(0);
@@ -680,7 +755,101 @@ void RivuletBrowserWindow::OnGo() {
         }
         
         browser_->GetMainFrame()->LoadURL(url);
+        
+        // Save the new URL to settings
+        SaveSettings();
     }
+}
+
+void RivuletBrowserWindow::OnResolutionChange() {
+    if (!resolution_hwnd_) return;
+    
+    // Get resolution text (handles both dropdown selection and custom input)
+    wchar_t resolution_text[32];
+    int text_length = GetWindowTextW(resolution_hwnd_, resolution_text, sizeof(resolution_text) / sizeof(wchar_t));
+    
+    if (text_length == 0) {
+        std::cerr << "❌ No resolution text entered" << std::endl;
+        return;
+    }
+    
+    // Parse resolution (format: "1920x1080")
+    int new_width, new_height;
+    if (swscanf_s(resolution_text, L"%dx%d", &new_width, &new_height) != 2) {
+        std::cerr << "❌ Invalid resolution format. Use format: 1920x1080" << std::endl;
+        return;
+    }
+    
+    // Validate resolution bounds (reasonable limits)
+    if (new_width < 100 || new_width > 7680 || new_height < 100 || new_height > 4320) {
+        std::cerr << "❌ Resolution out of bounds. Width: 100-7680, Height: 100-4320" << std::endl;
+        return;
+    }
+    
+    // Update Spout dimensions
+    spout_width_ = new_width;
+    spout_height_ = new_height;
+    
+    // Calculate new window size maintaining aspect ratio
+    float spout_aspect = (float)spout_width_ / spout_height_;
+    int desired_content_height = 600; // Base content height
+    int calculated_content_width = (int)(desired_content_height * spout_aspect);
+    
+    // Update window dimensions
+    window_width_ = calculated_content_width;
+    window_height_ = desired_content_height;
+    
+    // Resize the window
+    SetWindowPos(hwnd_, nullptr, 0, 0, 
+                window_width_, window_height_ + TOOLBAR_HEIGHT,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    
+    // Trigger layout update
+    OnSize();
+    
+    // Auto-reload the page to adapt content to new viewport dimensions
+    if (browser_) {
+        browser_->Reload();
+        std::cout << "🔄 Page reloaded for new resolution" << std::endl;
+    }
+    
+    std::cout << "✅ Resolution changed to " << new_width << "x" << new_height << std::endl;
+    std::cout << "   Window resized to " << window_width_ << "x" << (window_height_ + TOOLBAR_HEIGHT) << std::endl;
+    
+    // Save the new resolution to settings
+    SaveSettings();
+}
+
+void RivuletBrowserWindow::ToggleToolbar() {
+    toolbar_visible_ = !toolbar_visible_;
+    
+    // Show/hide all toolbar controls
+    int show_cmd = toolbar_visible_ ? SW_SHOW : SW_HIDE;
+    ShowWindow(back_hwnd_, show_cmd);
+    ShowWindow(forward_hwnd_, show_cmd);
+    ShowWindow(reload_hwnd_, show_cmd);
+    ShowWindow(stop_hwnd_, show_cmd);
+    ShowWindow(edit_hwnd_, show_cmd);
+    ShowWindow(go_hwnd_, show_cmd);
+    ShowWindow(resolution_hwnd_, show_cmd);
+    
+    // Adjust window size to account for toolbar visibility
+    int toolbar_height = toolbar_visible_ ? TOOLBAR_HEIGHT : 0;
+    
+    RECT window_rect;
+    GetWindowRect(hwnd_, &window_rect);
+    int window_width = window_rect.right - window_rect.left;
+    int current_content_height = (window_rect.bottom - window_rect.top) - (toolbar_visible_ ? 0 : TOOLBAR_HEIGHT);
+    
+    // Resize window
+    SetWindowPos(hwnd_, nullptr, 0, 0,
+                window_width, current_content_height + toolbar_height,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    
+    // Invalidate to force repaint with new layout
+    InvalidateRect(hwnd_, nullptr, TRUE);
+    
+    std::cout << (toolbar_visible_ ? "✅ Toolbar shown" : "🔲 Toolbar hidden") << " (F11 to toggle)" << std::endl;
 }
 
 void RivuletBrowserWindow::OnMouseEvent(UINT message, WPARAM wParam, LPARAM lParam) {
@@ -690,14 +859,15 @@ void RivuletBrowserWindow::OnMouseEvent(UINT message, WPARAM wParam, LPARAM lPar
     int y = GET_Y_LPARAM(lParam);
     
     // Adjust for toolbar - only send events in content area
-    if (y < TOOLBAR_HEIGHT) return;
-    y -= TOOLBAR_HEIGHT;
+    int toolbar_height = toolbar_visible_ ? TOOLBAR_HEIGHT : 0;
+    if (y < toolbar_height) return;
+    y -= toolbar_height;
     
     // Scale coordinates to Spout output size with aspect ratio correction
     RECT client_rect;
     GetClientRect(hwnd_, &client_rect);
     int content_width = client_rect.right;
-    int content_height = client_rect.bottom - TOOLBAR_HEIGHT;
+    int content_height = client_rect.bottom - toolbar_height;
     
     if (content_width > 0 && content_height > 0) {
         // Calculate the actual drawing area (same logic as OnPaint)
@@ -773,6 +943,12 @@ void RivuletBrowserWindow::OnMouseEvent(UINT message, WPARAM wParam, LPARAM lPar
 
 void RivuletBrowserWindow::OnKeyEvent(UINT message, WPARAM wParam, LPARAM lParam) {
     if (!browser_) return;
+    
+    // Handle hotkeys first (before sending to CEF)
+    if (message == WM_KEYDOWN && wParam == VK_F11) {
+        ToggleToolbar();
+        return; // Don't send F11 to CEF
+    }
     
     CefKeyEvent key_event;
     key_event.windows_key_code = static_cast<int>(wParam);
@@ -915,6 +1091,73 @@ void RivuletBrowserWindow::UpdateOffScreenBitmap(const void* cef_buffer, int wid
     LeaveCriticalSection(&bitmap_lock_);
 }
 
+// Settings persistence implementation
+std::wstring RivuletBrowserWindow::GetSettingsPath() {
+    wchar_t documents[MAX_PATH];
+    if (SHGetFolderPathW(nullptr, CSIDL_PERSONAL, nullptr, SHGFP_TYPE_CURRENT, documents) == S_OK) {
+        return std::wstring(documents) + L"\\rivulet_settings.txt";
+    }
+    // Fallback to current directory
+    return L"rivulet_settings.txt";
+}
+
+void RivuletBrowserWindow::LoadSettings() {
+    std::wstring settings_path = GetSettingsPath();
+    std::wifstream file(settings_path);
+    
+    if (!file.is_open()) {
+        std::wcout << L"No settings file found, using defaults" << std::endl;
+        return;
+    }
+    
+    std::wstring line;
+    while (std::getline(file, line)) {
+        if (line.find(L"resolution=") == 0) {
+            std::wstring resolution = line.substr(11); // Skip "resolution="
+            int width, height;
+            if (swscanf_s(resolution.c_str(), L"%dx%d", &width, &height) == 2) {
+                if (width >= 100 && width <= 7680 && height >= 100 && height <= 4320) {
+                    spout_width_ = width;
+                    spout_height_ = height;
+                    std::wcout << L"✅ Loaded resolution: " << width << L"x" << height << std::endl;
+                }
+            }
+        } else if (line.find(L"url=") == 0) {
+            std::wstring url = line.substr(4); // Skip "url="
+            if (!url.empty() && edit_hwnd_) {
+                SetWindowTextW(edit_hwnd_, url.c_str());
+                std::wcout << L"✅ Loaded URL: " << url << std::endl;
+            }
+        }
+    }
+    file.close();
+}
+
+void RivuletBrowserWindow::SaveSettings() {
+    std::wstring settings_path = GetSettingsPath();
+    std::wofstream file(settings_path);
+    
+    if (!file.is_open()) {
+        std::wcerr << L"❌ Failed to save settings to: " << settings_path << std::endl;
+        return;
+    }
+    
+    // Save current resolution
+    file << L"resolution=" << spout_width_ << L"x" << spout_height_ << std::endl;
+    
+    // Save current URL
+    if (edit_hwnd_) {
+        wchar_t url_buffer[1024];
+        int len = GetWindowTextW(edit_hwnd_, url_buffer, sizeof(url_buffer) / sizeof(wchar_t));
+        if (len > 0) {
+            file << L"url=" << url_buffer << std::endl;
+        }
+    }
+    
+    file.close();
+    std::wcout << L"✅ Settings saved to: " << settings_path << std::endl;
+}
+
 // BrowserClient implementation
 void RivuletBrowserWindow::BrowserClient::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
     CEF_REQUIRE_UI_THREAD();
@@ -935,6 +1178,33 @@ void RivuletBrowserWindow::BrowserClient::OnBeforeClose(CefRefPtr<CefBrowser> br
     CEF_REQUIRE_UI_THREAD();
     parent_->browser_ = nullptr;
     // CEF browser closed
+}
+
+bool RivuletBrowserWindow::BrowserClient::OnBeforePopup(CefRefPtr<CefBrowser> browser,
+                                                       CefRefPtr<CefFrame> frame,
+                                                       int popup_id, 
+                                                       const CefString& target_url,
+                                                       const CefString& target_frame_name,
+                                                       WindowOpenDisposition target_disposition,
+                                                       bool user_gesture,
+                                                       const CefPopupFeatures& popupFeatures,
+                                                       CefWindowInfo& windowInfo,
+                                                       CefRefPtr<CefClient>& client,
+                                                       CefBrowserSettings& settings,
+                                                       CefRefPtr<CefDictionaryValue>& extra_info,
+                                                       bool* no_javascript_access) {
+    CEF_REQUIRE_UI_THREAD();
+    
+    // Block all popups and redirect to main window
+    std::cout << "🚫 Popup blocked, redirecting to main window: " << target_url.ToString() << std::endl;
+    
+    // Load the popup URL in the main browser instead
+    if (browser && browser->GetMainFrame()) {
+        browser->GetMainFrame()->LoadURL(target_url);
+    }
+    
+    // Return true to block the popup
+    return true;
 }
 
 void RivuletBrowserWindow::BrowserClient::OnLoadingStateChange(CefRefPtr<CefBrowser> browser,

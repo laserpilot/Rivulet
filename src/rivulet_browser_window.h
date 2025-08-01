@@ -49,6 +49,8 @@ private:
 
     // Window procedure
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+    static LRESULT CALLBACK EditProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+    static LRESULT CALLBACK ResolutionProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
     LRESULT HandleMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 
     // Event handlers
@@ -64,10 +66,22 @@ private:
     void OnReload();
     void OnStop();
     void OnGo();
+    void OnResolutionChange();
+    void ToggleToolbar();
     
     // Input event handlers for off-screen rendering
     void OnMouseEvent(UINT message, WPARAM wParam, LPARAM lParam);
     void OnKeyEvent(UINT message, WPARAM wParam, LPARAM lParam);
+    
+    // Double buffering management
+    bool CreateOffScreenBitmap(int width, int height);
+    void DestroyOffScreenBitmap();
+    void UpdateOffScreenBitmap(const void* cef_buffer, int width, int height);
+    
+    // Settings persistence
+    void LoadSettings();
+    void SaveSettings();
+    std::wstring GetSettingsPath();
 
     // CEF Client implementation
     class BrowserClient : public CefClient,
@@ -88,6 +102,19 @@ private:
         void OnAfterCreated(CefRefPtr<CefBrowser> browser) override;
         bool DoClose(CefRefPtr<CefBrowser> browser) override;
         void OnBeforeClose(CefRefPtr<CefBrowser> browser) override;
+        bool OnBeforePopup(CefRefPtr<CefBrowser> browser,
+                          CefRefPtr<CefFrame> frame,
+                          int popup_id,
+                          const CefString& target_url,
+                          const CefString& target_frame_name,
+                          WindowOpenDisposition target_disposition,
+                          bool user_gesture,
+                          const CefPopupFeatures& popupFeatures,
+                          CefWindowInfo& windowInfo,
+                          CefRefPtr<CefClient>& client,
+                          CefBrowserSettings& settings,
+                          CefRefPtr<CefDictionaryValue>& extra_info,
+                          bool* no_javascript_access) override;
 
         // CefLoadHandler methods
         void OnLoadingStateChange(CefRefPtr<CefBrowser> browser,
@@ -135,7 +162,10 @@ private:
     HWND reload_hwnd_;
     HWND stop_hwnd_;
     HWND edit_hwnd_;    // URL edit box
+    HWND go_hwnd_;      // Go button
+    HWND resolution_hwnd_; // Resolution dropdown
     WNDPROC edit_wndproc_old_;
+    WNDPROC resolution_wndproc_old_;
     
     // Font for controls
     HFONT font_;
@@ -150,14 +180,22 @@ private:
     // State
     bool initialized_;
     bool is_closing_;
+    bool toolbar_visible_;
     
     // Spout output dimensions
     int spout_width_;
     int spout_height_;
     
-    // Off-screen rendering buffer for display
-    std::vector<uint8_t> display_buffer_;
-    bool has_new_frame_;
+    // Double buffering for smooth 60fps display
+    HDC off_screen_dc_;
+    HBITMAP off_screen_bitmap_;
+    HBITMAP old_bitmap_;  // To restore when cleaning up
+    void* bitmap_pixels_;
+    int bitmap_width_;
+    int bitmap_height_;
+    
+    // Thread synchronization for bitmap access
+    CRITICAL_SECTION bitmap_lock_;
 
     // Control IDs
     static constexpr int ID_BACK = 1001;
@@ -165,10 +203,13 @@ private:
     static constexpr int ID_RELOAD = 1003;
     static constexpr int ID_STOP = 1004;
     static constexpr int ID_URL_EDIT = 1005;
+    static constexpr int ID_GO = 1006;
+    static constexpr int ID_RESOLUTION = 1007;
 
     // Control dimensions
     static constexpr int BUTTON_WIDTH = 50;
     static constexpr int BUTTON_HEIGHT = 25;
+    static constexpr int RESOLUTION_WIDTH = 120;
     static constexpr int TOOLBAR_HEIGHT = 35;
     static constexpr int TOOLBAR_PADDING = 5;
 
