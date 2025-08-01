@@ -16,7 +16,8 @@ WebLayer::WebLayer(std::shared_ptr<D3D11Device> device)
     , width_(1280)
     , height_(720)
     , has_new_frame_(false)
-    , initialized_(false) {
+    , initialized_(false)
+    , pending_focus_(false) {
 }
 
 WebLayer::~WebLayer() {
@@ -93,6 +94,72 @@ void WebLayer::Reload() {
     }
 }
 
+void WebLayer::SendMouseClickEvent(int x, int y, bool is_left_button, bool mouse_up) {
+    if (!browser_) return;
+    
+    CefMouseEvent mouse_event;
+    mouse_event.x = x;
+    mouse_event.y = y;
+    mouse_event.modifiers = 0;
+    
+    CefBrowserHost::MouseButtonType button_type = 
+        is_left_button ? MBT_LEFT : MBT_RIGHT;
+    
+    browser_->GetHost()->SendMouseClickEvent(mouse_event, button_type, mouse_up, 1);
+}
+
+void WebLayer::SendMouseMoveEvent(int x, int y) {
+    if (!browser_) return;
+    
+    CefMouseEvent mouse_event;
+    mouse_event.x = x;
+    mouse_event.y = y;
+    mouse_event.modifiers = 0;
+    
+    browser_->GetHost()->SendMouseMoveEvent(mouse_event, false);
+}
+
+void WebLayer::SendMouseWheelEvent(int x, int y, int delta_x, int delta_y) {
+    if (!browser_) return;
+    
+    CefMouseEvent mouse_event;
+    mouse_event.x = x;
+    mouse_event.y = y;
+    mouse_event.modifiers = 0;
+    
+    browser_->GetHost()->SendMouseWheelEvent(mouse_event, delta_x, delta_y);
+}
+
+void WebLayer::SendKeyEvent(int windows_key_code, bool key_up, bool is_char) {
+    if (!browser_) return;
+    
+    CefKeyEvent key_event;
+    key_event.windows_key_code = windows_key_code;
+    key_event.native_key_code = windows_key_code;
+    key_event.is_system_key = false;
+    key_event.character = is_char ? windows_key_code : 0;
+    key_event.unmodified_character = is_char ? windows_key_code : 0;
+    key_event.modifiers = 0;
+    
+    if (is_char) {
+        key_event.type = KEYEVENT_CHAR;
+    } else {
+        key_event.type = key_up ? KEYEVENT_KEYUP : KEYEVENT_KEYDOWN;
+    }
+    
+    browser_->GetHost()->SendKeyEvent(key_event);
+}
+
+void WebLayer::SendFocusEvent(bool has_focus) {
+    if (!browser_) {
+        // Store focus state for when browser is created
+        pending_focus_ = has_focus;
+        return;
+    }
+    
+    browser_->GetHost()->SetFocus(has_focus);
+}
+
 void WebLayer::GetViewRect(CefRefPtr<CefBrowser> browser, CefRect& rect) {
     rect = CefRect(0, 0, width_, height_);
 }
@@ -133,6 +200,13 @@ void WebLayer::OnPaint(CefRefPtr<CefBrowser> browser,
 void WebLayer::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
     CEF_REQUIRE_UI_THREAD();
     browser_ = browser;
+    
+    // Apply pending focus state if any
+    if (pending_focus_) {
+        browser_->GetHost()->SetFocus(true);
+        pending_focus_ = false;
+    }
+    
     std::cout << "✅ CEF browser created successfully" << std::endl;
 }
 

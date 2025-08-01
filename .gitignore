@@ -2,6 +2,7 @@
 target/
 build/
 dist/
+Rivulet-v*/
 *.app
 
 # Dependencies
@@ -34,6 +35,9 @@ Thumbs.db
 *.dll
 *.lib
 *.dSYM/
+*.exe
+*.7z
+*.zip
 
 # Compiled executables
 test_animated_1080p

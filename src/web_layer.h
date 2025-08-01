@@ -33,6 +33,13 @@ public:
     // Navigation
     void LoadURL(const std::string& url);
     void Reload();
+    
+    // Input handling
+    void SendMouseClickEvent(int x, int y, bool is_left_button, bool mouse_up);
+    void SendMouseMoveEvent(int x, int y);
+    void SendMouseWheelEvent(int x, int y, int delta_x, int delta_y);
+    void SendKeyEvent(int windows_key_code, bool key_up, bool is_char = false);
+    void SendFocusEvent(bool has_focus);
 
     // CefClient methods
     CefRefPtr<CefRenderHandler> GetRenderHandler() override { return this; }
@@ -101,6 +108,7 @@ private:
     // HANDLE shared_handle_;
     
     bool initialized_;
+    bool pending_focus_;
 };
 
 } // namespace Rivulet

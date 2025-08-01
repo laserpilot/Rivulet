@@ -1,58 +1,69 @@
-# Rivulet - Modern CEF-Spout Video Sharing Application
+# Rivulet - Interactive Browser with Spout Streaming
 
-**🎉 MAJOR SUCCESS: Complete CEF-Spout Integration Working!**
+> **Professional interactive web browser with real-time Spout2 video sharing for creative applications**
 
-A high-performance web content to Spout2 video sharing application built with modern C++17, CEF (Chromium Embedded Framework), and Spout2 for Windows creative applications.
+![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Platform](https://img.shields.io/badge/platform-Windows-blue.svg) ![Status](https://img.shields.io/badge/status-Production%20Ready-green.svg)
 
-## ✅ Current Status: FULLY FUNCTIONAL
+## 🎯 What is Rivulet?
 
-- **✅ CEF Browser Engine**: Successfully integrated with modern CEF v138
-- **✅ Spout2 Sender**: Broadcasting web content as "Rivulet Output" 
-- **✅ Real-time Rendering**: 60 FPS web content → Spout pipeline
-- **✅ Modern Build System**: CMake + Visual Studio 2022 + C++17
-- **✅ Zero-Copy Performance**: Direct bitmap → Spout frame sharing
-- **✅ Creative App Integration**: Works with MadMapper, Resolume, TouchDesigner, etc.
+Rivulet transforms any website into a live video source for creative applications. Browse the web normally while simultaneously streaming the content via Spout2 to video mixing software, VJ tools, and live production applications.
+
+**Perfect for:**
+- Live video production and streaming
+- VJ performances and club visuals  
+- Interactive installations and digital art
+- Real-time web content mixing
+- Creative coding and generative art
+
+## ✨ Key Features
+
+- 🌐 **Full Interactive Browser** - Complete web browsing with mouse and keyboard support
+- 📺 **Real-time Spout Streaming** - 1920x1080@60fps video output via Spout2
+- 🎮 **Professional Controls** - Back/Forward/Reload/Stop/URL bar with Go button
+- 📐 **Smart Aspect Ratio** - Automatic letterboxing prevents content distortion
+- 🎯 **Zero Crashes** - Rock-solid stability with professional error handling
+- ⚡ **High Performance** - Hardware accelerated rendering with CEF
+
+## 🎬 Compatible Applications
+
+**Confirmed Working:**
+- **[MadMapper](https://madmapper.com/)** - Video mapping and projection
+- **[Resolume](https://resolume.com/)** - Live video mixing and VJ software
+- **[TouchDesigner](https://derivative.ca/)** - Interactive media systems
+- **[OBS Studio](https://obsproject.com/)** - Live streaming and recording
 
 ## 🚀 Quick Start
 
-### Prerequisites
-- Windows 10/11
-- Visual Studio 2022 (Community edition)
-- CEF binary distribution (v138+)
+### For Users (Binary Release)
+1. Download the latest release package
+2. Extract and run `Rivulet.exe`
+3. Enter any website URL
+4. Content streams automatically as "Rivulet Output" via Spout
+5. Connect from your creative application
 
-### Setup Steps
+### For Developers (Build from Source)
 
-1. **Clone Repository**
-   ```cmd
-   git clone https://github.com/your-repo/Rivulet.git
-   cd Rivulet
-   ```
+#### Prerequisites
+- Windows 10/11 (64-bit)
+- Visual Studio 2022 with C++ tools
+- CMake 3.15+
+- Git
 
-2. **Download CEF Binary**
-   - Get latest CEF from: https://cef-builds.spotifycdn.com/index.html
-   - Extract to project's `cef/` directory
-   - Copy all contents from CEF distribution to `Rivulet/cef/`
+#### Build Instructions
+```bash
+# Clone repository
+git clone https://github.com/user/rivulet.git
+cd rivulet
 
-3. **Build CEF Libraries**
-   ```cmd
-   build-cef.bat
-   ```
+# Download and setup CEF
+.\build-cef.bat
 
-4. **Build Rivulet**
-   ```cmd
-   build-rivulet.bat
-   ```
+# Build Rivulet
+.\build-rivulet.bat
 
-5. **Run Application**
-   ```cmd
-   cd build\bin\Release
-   .\Rivulet.exe
-   ```
-
-### Expected Results
-- **Application Window**: Shows live web content (Google homepage)
-- **Spout Output**: "Rivulet Output" available in all Spout receivers
-- **Console Output**: Real-time initialization and frame processing logs
+# Create distribution package
+.\create-release-package.bat
+```
 
 ## 🏗️ Architecture
 

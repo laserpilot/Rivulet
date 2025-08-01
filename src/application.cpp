@@ -15,6 +15,17 @@
 #include <io.h>
 #include <fcntl.h>
 
+// Additional Windows headers for input handling
+#ifndef GET_X_LPARAM
+#define GET_X_LPARAM(lp) ((int)(short)LOWORD(lp))
+#endif
+#ifndef GET_Y_LPARAM  
+#define GET_Y_LPARAM(lp) ((int)(short)HIWORD(lp))
+#endif
+#ifndef GET_WHEEL_DELTA_WPARAM
+#define GET_WHEEL_DELTA_WPARAM(wParam) ((short)HIWORD(wParam))
+#endif
+
 namespace Rivulet {
 
 Application::Application(HINSTANCE instance) 
@@ -23,8 +34,16 @@ Application::Application(HINSTANCE instance)
     , window_class_(L"RivuletMainWindow")
     , window_width_(1024)
     , window_height_(768)
+    , control_panel_(nullptr)
+    , back_button_(nullptr)
+    , forward_button_(nullptr)
+    , url_edit_(nullptr)
+    , go_button_(nullptr)
+    , control_panel_height_(40)
     , initialized_(false)
-    , should_exit_(false) {
+    , should_exit_(false)
+    , left_mouse_down_(false)
+    , right_mouse_down_(false) {
 }
 
 Application::~Application() {
@@ -41,6 +60,11 @@ bool Application::Initialize() {
     
     if (!InitializeWindow()) {
         std::cerr << "❌ Failed to initialize window" << std::endl;
+        return false;
+    }
+    
+    if (!InitializeControls()) {
+        std::cerr << "❌ Failed to initialize controls" << std::endl;
         return false;
     }
     
@@ -197,6 +221,57 @@ bool Application::InitializeWindow() {
     return true;
 }
 
+bool Application::InitializeControls() {
+    std::cout << "Creating control panel..." << std::endl;
+    
+    // Create control panel as a child window with gray background
+    control_panel_ = CreateWindowW(
+        L"STATIC", L"",
+        WS_CHILD | WS_VISIBLE | WS_BORDER | SS_GRAYFRAME,
+        0, 0, window_width_, control_panel_height_,
+        window_, nullptr, instance_, nullptr
+    );
+    
+    if (!control_panel_) {
+        return false;
+    }
+    
+    // Create back button
+    back_button_ = CreateWindowW(
+        L"BUTTON", L"<",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        5, 5, 30, 30,
+        control_panel_, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_BACK_BUTTON)), instance_, nullptr
+    );
+    
+    // Create forward button
+    forward_button_ = CreateWindowW(
+        L"BUTTON", L">",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        40, 5, 30, 30,
+        control_panel_, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_FORWARD_BUTTON)), instance_, nullptr
+    );
+    
+    // Create URL edit box
+    url_edit_ = CreateWindowW(
+        L"EDIT", L"https://www.google.com",
+        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+        75, 5, window_width_ - 150, 30,
+        control_panel_, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_URL_EDIT)), instance_, nullptr
+    );
+    
+    // Create Go button
+    go_button_ = CreateWindowW(
+        L"BUTTON", L"Go",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        window_width_ - 65, 5, 60, 30,
+        control_panel_, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_GO_BUTTON)), instance_, nullptr
+    );
+    
+    std::cout << "✅ Control panel created" << std::endl;
+    return true;
+}
+
 bool Application::InitializeD3D11() {
     std::cout << "Initializing D3D11 device..." << std::endl;
     
@@ -219,9 +294,18 @@ bool Application::InitializeWebLayer() {
     
     try {
         web_layer_ = std::make_unique<WebLayer>(d3d11_device_);
-        if (!web_layer_->Initialize("https://www.google.com", window_width_, window_height_)) {
+        
+        // CEF browser should use full original size (content gets sent to Spout at this size)
+        // but display will be offset by control panel
+        int cef_width = 1024;
+        int cef_height = 768;
+        
+        if (!web_layer_->Initialize("https://www.google.com", cef_width, cef_height)) {
             return false;
         }
+        
+        // Give initial focus to the browser
+        web_layer_->SendFocusEvent(true);
         
         std::cout << "✅ Web layer initialized" << std::endl;
         return true;
@@ -270,7 +354,22 @@ void Application::OnResize(int width, int height) {
     
     std::cout << "Window resized to " << width << "x" << height << std::endl;
     
-    // TODO: Resize CEF browser and D3D11 resources
+    // Resize control panel
+    if (control_panel_) {
+        SetWindowPos(control_panel_, nullptr, 0, 0, width, control_panel_height_, SWP_NOZORDER);
+        
+        // Resize URL edit box
+        if (url_edit_) {
+            SetWindowPos(url_edit_, nullptr, 75, 5, width - 150, 30, SWP_NOZORDER);
+        }
+        
+        // Reposition Go button
+        if (go_button_) {
+            SetWindowPos(go_button_, nullptr, width - 65, 5, 60, 30, SWP_NOZORDER);
+        }
+    }
+    
+    // TODO: Resize CEF browser if we want dynamic sizing
 }
 
 void Application::OnDestroy() {
@@ -298,8 +397,35 @@ LRESULT Application::WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM l
                     bmi.bmiHeader.biBitCount = 32;
                     bmi.bmiHeader.biCompression = BI_RGB;
                     
-                    // Draw the bitmap
-                    StretchDIBits(hdc, 0, 0, window_width_, window_height_,
+                    // Draw the bitmap below the control panel, maintaining aspect ratio
+                    int content_height = window_height_ - control_panel_height_;
+                    
+                    // Calculate aspect ratio preserving dimensions
+                    float cef_aspect = 1024.0f / 768.0f;
+                    float window_aspect = (float)window_width_ / (float)content_height;
+                    
+                    int draw_width, draw_height, draw_x, draw_y;
+                    
+                    if (window_aspect > cef_aspect) {
+                        // Window is wider than CEF aspect ratio - fit to height
+                        draw_height = content_height;
+                        draw_width = (int)(draw_height * cef_aspect);
+                        draw_x = (window_width_ - draw_width) / 2;
+                        draw_y = control_panel_height_;
+                    } else {
+                        // Window is taller than CEF aspect ratio - fit to width  
+                        draw_width = window_width_;
+                        draw_height = (int)(draw_width / cef_aspect);
+                        draw_x = 0;
+                        draw_y = control_panel_height_ + (content_height - draw_height) / 2;
+                    }
+                    
+                    // Clear the background first
+                    RECT content_rect = {0, control_panel_height_, window_width_, window_height_};
+                    FillRect(hdc, &content_rect, (HBRUSH)(COLOR_WINDOW + 1));
+                    
+                    // Draw the bitmap with proper aspect ratio
+                    StretchDIBits(hdc, draw_x, draw_y, draw_width, draw_height,
                                  0, 0, 1024, 768,
                                  bitmap, &bmi, DIB_RGB_COLORS, SRCCOPY);
                 } else {
@@ -319,6 +445,198 @@ LRESULT Application::WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM l
             int width = LOWORD(lParam);
             int height = HIWORD(lParam);
             OnResize(width, height);
+            return 0;
+        }
+
+        // Mouse events
+        case WM_LBUTTONDOWN: {
+            int x = GET_X_LPARAM(lParam);
+            int y = GET_Y_LPARAM(lParam);
+            
+            // Only handle mouse events in the content area (below control panel)
+            if (y >= control_panel_height_) {
+                // Adjust y coordinate to content area and scale to CEF browser (1024x768)
+                int content_y = y - control_panel_height_;
+                int content_height = window_height_ - control_panel_height_;
+                
+                int cef_x = (x * 1024) / window_width_;
+                int cef_y = (content_y * 768) / content_height;
+                
+                left_mouse_down_ = true;
+                if (web_layer_) {
+                    web_layer_->SendMouseClickEvent(cef_x, cef_y, true, false);
+                }
+                SetCapture(hwnd);
+            }
+            return 0;
+        }
+
+        case WM_LBUTTONUP: {
+            int x = GET_X_LPARAM(lParam);
+            int y = GET_Y_LPARAM(lParam);
+            
+            if (y >= control_panel_height_) {
+                int content_y = y - control_panel_height_;
+                int content_height = window_height_ - control_panel_height_;
+                
+                int cef_x = (x * 1024) / window_width_;
+                int cef_y = (content_y * 768) / content_height;
+                
+                left_mouse_down_ = false;
+                if (web_layer_) {
+                    web_layer_->SendMouseClickEvent(cef_x, cef_y, true, true);
+                }
+            }
+            ReleaseCapture();
+            return 0;
+        }
+
+        case WM_RBUTTONDOWN: {
+            int x = GET_X_LPARAM(lParam);
+            int y = GET_Y_LPARAM(lParam);
+            
+            if (y >= control_panel_height_) {
+                int content_y = y - control_panel_height_;
+                int content_height = window_height_ - control_panel_height_;
+                
+                int cef_x = (x * 1024) / window_width_;
+                int cef_y = (content_y * 768) / content_height;
+                
+                right_mouse_down_ = true;
+                if (web_layer_) {
+                    web_layer_->SendMouseClickEvent(cef_x, cef_y, false, false);
+                }
+            }
+            return 0;
+        }
+
+        case WM_RBUTTONUP: {
+            int x = GET_X_LPARAM(lParam);
+            int y = GET_Y_LPARAM(lParam);
+            
+            if (y >= control_panel_height_) {
+                int content_y = y - control_panel_height_;
+                int content_height = window_height_ - control_panel_height_;
+                
+                int cef_x = (x * 1024) / window_width_;
+                int cef_y = (content_y * 768) / content_height;
+                
+                right_mouse_down_ = false;
+                if (web_layer_) {
+                    web_layer_->SendMouseClickEvent(cef_x, cef_y, false, true);
+                }
+            }
+            return 0;
+        }
+
+        case WM_MOUSEMOVE: {
+            int x = GET_X_LPARAM(lParam);
+            int y = GET_Y_LPARAM(lParam);
+            
+            if (y >= control_panel_height_) {
+                int content_y = y - control_panel_height_;
+                int content_height = window_height_ - control_panel_height_;
+                
+                int cef_x = (x * 1024) / window_width_;
+                int cef_y = (content_y * 768) / content_height;
+                
+                if (web_layer_) {
+                    // Always send mouse move events - CEF needs them for hover states
+                    web_layer_->SendMouseMoveEvent(cef_x, cef_y);
+                }
+            }
+            return 0;
+        }
+
+        case WM_MOUSEWHEEL: {
+            int x = GET_X_LPARAM(lParam);
+            int y = GET_Y_LPARAM(lParam);
+            int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+            
+            // Convert screen coordinates to client coordinates
+            POINT pt = {x, y};
+            ScreenToClient(hwnd, &pt);
+            
+            // Scale to CEF coordinates
+            int cef_x = (pt.x * 1024) / window_width_;
+            int cef_y = (pt.y * 768) / window_height_;
+            
+            if (web_layer_) {
+                web_layer_->SendMouseWheelEvent(cef_x, cef_y, 0, delta);
+            }
+            return 0;
+        }
+
+        // Keyboard events
+        case WM_KEYDOWN:
+        case WM_SYSKEYDOWN: {
+            // Check if Enter key pressed in URL edit box
+            if (wParam == VK_RETURN && GetFocus() == url_edit_) {
+                OnGoButton();
+                return 0;
+            }
+            
+            // Only send keyboard events to CEF if not in control area
+            HWND focused = GetFocus();
+            if (focused != url_edit_ && web_layer_) {
+                web_layer_->SendKeyEvent(static_cast<int>(wParam), false);
+            }
+            return 0;
+        }
+
+        case WM_KEYUP:
+        case WM_SYSKEYUP: {
+            HWND focused = GetFocus();
+            if (focused != url_edit_ && web_layer_) {
+                web_layer_->SendKeyEvent(static_cast<int>(wParam), true);
+            }
+            return 0;
+        }
+
+        case WM_CHAR: {
+            HWND focused = GetFocus();
+            if (focused != url_edit_ && web_layer_) {
+                web_layer_->SendKeyEvent(static_cast<int>(wParam), false, true);
+            }
+            return 0;
+        }
+
+        // Control commands
+        case WM_COMMAND: {
+            int wmId = LOWORD(wParam);
+            switch (wmId) {
+                case ID_BACK_BUTTON:
+                    OnBackButton();
+                    return 0;
+                case ID_FORWARD_BUTTON:
+                    OnForwardButton();
+                    return 0;
+                case ID_GO_BUTTON:
+                    OnGoButton();
+                    return 0;
+                case ID_URL_EDIT:
+                    if (HIWORD(wParam) == EN_CHANGE) {
+                        // URL edit box content changed
+                    }
+                    return 0;
+                default:
+                    break;
+            }
+            break;
+        }
+
+        // Focus events
+        case WM_SETFOCUS: {
+            if (web_layer_) {
+                web_layer_->SendFocusEvent(true);
+            }
+            return 0;
+        }
+
+        case WM_KILLFOCUS: {
+            if (web_layer_) {
+                web_layer_->SendFocusEvent(false);
+            }
             return 0;
         }
 
@@ -347,6 +665,62 @@ LRESULT CALLBACK Application::StaticWindowProc(HWND hwnd, UINT message, WPARAM w
     }
     
     return DefWindowProc(hwnd, message, wParam, lParam);
+}
+
+// Control event handlers
+void Application::OnBackButton() {
+    if (web_layer_ && web_layer_->GetBrowser()) {
+        web_layer_->GetBrowser()->GoBack();
+        std::cout << "Navigation: Back" << std::endl;
+    }
+}
+
+void Application::OnForwardButton() {
+    if (web_layer_ && web_layer_->GetBrowser()) {
+        web_layer_->GetBrowser()->GoForward();
+        std::cout << "Navigation: Forward" << std::endl;
+    }
+}
+
+void Application::OnGoButton() {
+    if (!url_edit_ || !web_layer_) {
+        std::cout << "OnGoButton: Missing components" << std::endl;
+        return;
+    }
+    
+    // Get URL from edit box
+    wchar_t url_buffer[1024];
+    int len = GetWindowTextW(url_edit_, url_buffer, sizeof(url_buffer) / sizeof(wchar_t));
+    
+    if (len == 0) {
+        std::cout << "OnGoButton: Empty URL" << std::endl;
+        return;
+    }
+    
+    // Convert to UTF-8
+    char utf8_url[1024];
+    int result = WideCharToMultiByte(CP_UTF8, 0, url_buffer, -1, utf8_url, sizeof(utf8_url), nullptr, nullptr);
+    
+    if (result == 0) {
+        std::cout << "OnGoButton: Failed to convert URL" << std::endl;
+        return;
+    }
+    
+    std::string url(utf8_url);
+    std::cout << "OnGoButton: Attempting to load URL: " << url << std::endl;
+    
+    // Add http:// if no protocol specified
+    if (url.find("://") == std::string::npos) {
+        url = "https://" + url;
+        std::cout << "OnGoButton: Added https prefix: " << url << std::endl;
+    }
+    
+    web_layer_->LoadURL(url);
+    std::cout << "OnGoButton: LoadURL called successfully" << std::endl;
+}
+
+void Application::OnUrlEnter() {
+    OnGoButton(); // Same as clicking Go button
 }
 
 } // namespace Rivulet
