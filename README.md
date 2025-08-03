@@ -1,260 +1,197 @@
-# electron-video-share
+# Rivulet - Cross-Platform Video Sharing
 
-Cross-platform video sharing for Electron applications using **Spout** (Windows) and **Syphon** (macOS).
+**Organized project structure for Windows (CEF + Spout) and macOS (Rust + Syphon) video sharing implementations**
 
-## Features
+This repository contains separate, independent implementations for real-time video sharing on Windows and macOS platforms.
 
-- 🌐 **Cross-Platform**: Works on both Windows and macOS
-- ⚡ **Hardware Accelerated**: Zero-copy video sharing using native frameworks
-- 🎯 **Unified API**: Single interface that works on both platforms
-- 📦 **Easy Integration**: Simple npm install and JavaScript API
-- 🔧 **Modern**: Built for latest Electron versions with TypeScript support
+## Project Structure
 
-## Installation
+```
+Rivulet/
+├── platforms/
+│   ├── windows/          # Windows Implementation
+│   │   ├── cef/          # Chromium Embedded Framework
+│   │   ├── lib/          # Spout2 SDK and libraries
+│   │   └── src/          # HTML/JS application interface
+│   └── macos/            # macOS Implementation (to be merged)
+│       └── src-tauri/    # Rust + Tauri + Syphon integration
+├── docs/                 # Technical documentation
+└── shared/               # Cross-platform resources
+```
+
+## Platform Implementations
+
+### Windows (CEF + Spout)
+- **Technology**: Chromium Embedded Framework + Spout2
+- **Graphics**: DirectX 11 texture sharing
+- **Language**: C++ with HTML/JS interface
+- **Status**: ✅ Ready for development
+
+### macOS (Rust + Syphon)
+- **Technology**: Tauri + Rust + Syphon Framework
+- **Graphics**: OpenGL/Metal IOSurface sharing
+- **Language**: Rust with Tauri app framework
+- **Status**: 🚧 To be merged from separate branch
+
+## Development Setup
+
+### Windows Development
+
+1. **Prerequisites**:
+   - Windows 10/11
+   - Visual Studio 2022 with C++ support
+   - CMake
+
+2. **Build CEF Application**:
+   ```bash
+   cd platforms/windows/cef/build
+   # Open cef.sln in Visual Studio or use:
+   cmake --build . --config Release
+   ```
+
+3. **Run Example**:
+   ```bash
+   cd platforms/windows/cef/build/tests/cefsimple/Release
+   ./cefsimple.exe
+   ```
+
+### macOS Development (Future)
+
+When the macOS branch is merged:
 
 ```bash
-npm install electron-video-share
+cd platforms/macos/src-tauri
+cargo run
 ```
 
-## Quick Start
+## Project Architecture
 
-```javascript
-const { VideoOutput } = require('electron-video-share');
-const { BrowserWindow } = require('electron');
+### Separate Platform Implementations
 
-// Create an offscreen Electron window
-const win = new BrowserWindow({
-  webPreferences: {
-    offscreen: true,
-    offscreenUseSharedTexture: true
-  },
-  show: false
-});
+This project maintains **separate, independent implementations** for each platform rather than attempting to unify them:
 
-// Create video output (automatically uses Spout on Windows, Syphon on macOS)
-const output = new VideoOutput("My App Output");
+**Why Separate?**
+- **Different Technologies**: Windows uses CEF+C++, macOS uses Rust+Tauri
+- **Platform-Specific Optimization**: Each implementation leverages platform strengths
+- **Independent Development**: Teams can work on each platform without conflicts
+- **Easier Maintenance**: Platform-specific bugs don't affect other platforms
 
-// Share the window's rendered content
-win.webContents.setFrameRate(60);
-win.webContents.on("paint", (event, dirty, image, texture) => {
-  if (texture) {
-    // Hardware accelerated path (recommended)
-    output.updateTexture(texture);
-  } else {
-    // Software fallback
-    output.updateFrame(image.getBitmap(), image.getSize());
-  }
-});
+### Current Status
 
-win.loadURL('https://example.com');
-```
+| Platform | Implementation | Build System | Status |
+|----------|---------------|--------------|---------|
+| **Windows** | CEF + Spout2 | Visual Studio + CMake | ✅ Ready |
+| **macOS** | Rust + Syphon | Cargo + Tauri | 🚧 Separate branch |
 
-## ⚠️ WebGL Compatibility Notice
+## Platform-Specific Information
 
-Some websites with complex WebGL content may cause crashes in Tauri's WebView component. Known problematic sites include:
+### Windows (CEF + Spout)
 
-- `threejs.org` - Complex 3D demonstrations  
-- `shadertoy.com` - GPU shader playground
-- `webglsamples.org` - WebGL sample gallery
-- `babylonjs.com` - 3D engine demos
+**Files**: `platforms/windows/`
 
-**Recommended Safe Sites for Testing:**
-- `example.com` - Simple static content
-- `httpbin.org` - HTTP request/response service  
-- `developer.mozilla.org` - MDN documentation
-- `github.com` - Version control platform
+- **CEF Framework**: Complete browser integration
+- **Spout2 SDK**: DirectX texture sharing
+- **HTML Interface**: Browser-based UI in `src/`
+- **Build**: Visual Studio solution ready to compile
 
-If you need to capture WebGL content, consider:
-1. Using simpler WebGL demos
-2. Testing with static HTML content first
-3. Running with `RUST_BACKTRACE=1` for debugging
+**Key Components**:
+- `platforms/windows/cef/` - CEF framework and examples
+- `platforms/windows/lib/Spout2/` - Spout2 SDK
+- `platforms/windows/src/` - Application HTML/JS interface
 
-## Running with Debug Info
+### macOS (Rust + Syphon)
 
+**Files**: `platforms/macos/` (to be merged)
+
+- **Tauri Framework**: Rust-based app framework
+- **Syphon Integration**: OpenGL/Metal video sharing
+- **Native Performance**: Zero-copy IOSurface streaming
+- **Build**: Cargo-based Rust toolchain
+
+## Documentation
+
+### Technical Documentation
+- **[Architecture Requirements](docs/ARCHITECTURE-REQUIREMENTS.md)** - Technical architecture overview
+- **[Build Instructions](docs/BUILD-AND-TEST-INSTRUCTIONS.md)** - Detailed build setup
+- **[Current Status](docs/current-summary.md)** - Implementation progress
+
+### Platform-Specific Guides
+- **[Windows Spout Integration](docs/SPOUT2-SDK-INTEGRATION.md)** - Windows-specific setup
+- **[macOS Tauri Implementation](docs/TAURI-IMPLEMENTATION.md)** - macOS-specific setup
+
+## Getting Started
+
+### Clone Repository
 ```bash
-RUST_BACKTRACE=1 cargo run
+git clone https://github.com/yourusername/rivulet.git
+cd rivulet
 ```
 
-## Platform Support
-
-| Platform | Framework | Requirements |
-|----------|-----------|--------------|
-| Windows  | Spout     | Windows 10+ with DirectX 11 |
-| macOS    | Syphon    | macOS 10.15+ with OpenGL/Metal |
-
-## API Reference
-
-### VideoOutput
-
-Main class for cross-platform video sharing.
-
-#### Constructor
-
-```javascript
-new VideoOutput(name, options)
-```
-
-- `name` (string): Human-readable output name
-- `options` (object, optional): Platform-specific options
-
-#### Methods
-
-##### `updateFrame(bitmap, size)`
-Update output with bitmap data.
-- `bitmap` (Buffer): Frame bitmap data
-- `size` (object): Frame dimensions `{width, height}`
-
-##### `updateTexture(texture)`
-Update output with texture data (hardware accelerated).
-- `texture`: Platform-specific texture handle
-
-##### `getName()`
-Returns the output name.
-
-##### `getPlatformInfo()`
-Returns platform information:
-```javascript
-{
-  platform: 'win32' | 'darwin',
-  framework: 'Spout' | 'Syphon',
-  version: '2.0.0'
-}
-```
-
-##### `hasClients()`
-Returns `true` if clients are connected.
-
-##### `stop()`
-Stop the output and cleanup resources.
-
-### Platform Detection
-
-```javascript
-const { isWindows, isMacOS, platform } = require('electron-video-share');
-
-console.log(`Running on: ${platform}`);
-console.log(`Windows: ${isWindows}`);
-console.log(`macOS: ${isMacOS}`);
-```
-
-## Building from Source
-
-### Prerequisites
-
-#### Windows
-- Visual Studio 2022
-- Node.js 16+
-- CMake
-- vcpkg (for Spout2)
-
-#### macOS
-- Xcode
-- Node.js 16+
-- CMake
-
-### Build Steps
-
+### Windows Development
 ```bash
-# Clone repository
-git clone https://github.com/yourusername/electron-video-share.git
-cd electron-video-share
+# Open the CEF solution in Visual Studio
+cd platforms/windows/cef/build
+start cef.sln
 
-# Install dependencies
-npm install
-
-# Build native module
-npm run build
-
-# Run tests
-npm test
+# Or build from command line
+cmake --build . --config Release
 ```
 
-## Examples
-
-### Basic Usage
-```javascript
-const { VideoOutput } = require('electron-video-share');
-const output = new VideoOutput("My App");
-
-// Use with Electron paint events
-win.webContents.on("paint", (event, dirty, image, texture) => {
-  output.updateTexture(texture);
-});
+### macOS Development (Future)
+```bash
+# When macOS branch is merged
+cd platforms/macos/src-tauri
+cargo run
 ```
 
-### Platform-Specific Features
-```javascript
-const { VideoOutput } = require('electron-video-share');
-const output = new VideoOutput("My App");
+## Compatible Applications
 
-const info = output.getPlatformInfo();
-if (info.framework === 'Spout') {
-  // Windows-specific Spout features
-  console.log('Using Spout on Windows');
-} else if (info.framework === 'Syphon') {
-  // macOS-specific Syphon features
-  console.log('Using Syphon on macOS');
-}
-```
-
-## Receiving Applications
-
-### Windows (Spout)
-- [Spout Receiver](https://github.com/leadedge/Spout2/releases)
-- OBS Studio (with Spout2 plugin)
-- Resolume Arena/Avenue
-- TouchDesigner
-- MadMapper
+### Windows (Spout2)
+- [OBS Studio](https://obsproject.com/) (with Spout2 plugin)
+- [Resolume Arena/Avenue](https://resolume.com/)
+- [TouchDesigner](https://derivative.ca/)
+- [MadMapper](https://madmapper.com/)
+- [Spout Receiver](https://github.com/leadedge/Spout2/releases) (testing tool)
 
 ### macOS (Syphon)
-- [Syphon Recorder](http://syphon.info/)
-- OBS Studio (with Syphon plugin)
-- Resolume Arena/Avenue
-- TouchDesigner
-- MadMapper
-- VDMX
-
-## Troubleshooting
-
-### Common Issues
-
-#### Module not found
-```bash
-# Rebuild native module
-npm run rebuild
-```
-
-#### Windows: Spout not working
-- Ensure DirectX 11 is available
-- Check if antivirus is blocking the application
-- Verify Visual Studio redistributables are installed
-
-#### macOS: Syphon not working
-- Ensure app has screen recording permissions
-- Check if OpenGL/Metal is available
-- Verify Xcode command line tools are installed
-
-### Debug Mode
-
-```javascript
-const { VideoOutput } = require('electron-video-share');
-const output = new VideoOutput("Debug Output", { debug: true });
-```
-
-## License
-
-MIT License - see [LICENSE](LICENSE) file for details.
+- [OBS Studio](https://obsproject.com/) (with Syphon plugin)
+- [Resolume Arena/Avenue](https://resolume.com/)
+- [VDMX](https://vidvox.net/)
+- [Millumin](https://www.millumin.com/)
+- [Syphon Recorder](http://syphon.info/) (testing tool)
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests
-5. Submit a pull request
+### Development Workflow
+1. **Platform Focus**: Choose Windows or macOS for development
+2. **Feature Branch**: Create feature branches for specific platforms
+3. **Platform Testing**: Test thoroughly on target platform
+4. **Documentation**: Update platform-specific documentation
+
+### Code Organization
+- Windows development in `platforms/windows/`
+- macOS development in `platforms/macos/` (when merged)
+- Shared documentation in `docs/`
+- Cross-platform resources in `shared/`
+
+## License
+
+This project builds upon multiple open-source technologies:
+- **Spout2**: MIT License (Windows video sharing)
+- **Syphon**: MIT License (macOS video sharing)
+- **CEF**: BSD License (Chromium Embedded Framework)
+- **Tauri**: MIT/Apache License (Rust app framework)
 
 ## Related Projects
 
-- [Spout](https://github.com/leadedge/Spout2) - Windows video sharing framework
-- [Syphon](https://github.com/Syphon/Syphon-Framework) - macOS video sharing framework
-- [Electron](https://electronjs.org/) - Cross-platform desktop applications
+### Video Sharing Frameworks
+- [Spout2](https://github.com/leadedge/Spout2) - Windows real-time video sharing
+- [Syphon](https://github.com/Syphon/Syphon-Framework) - macOS real-time video sharing
+
+### Application Frameworks
+- [CEF](https://github.com/chromiumembedded/cef) - Chromium Embedded Framework
+- [Tauri](https://tauri.app/) - Rust-based app development
+
+---
+
+**Transform your applications into professional video sources with Rivulet's platform-specific video sharing implementations.**
