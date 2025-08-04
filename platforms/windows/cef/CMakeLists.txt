@@ -11,9 +11,9 @@
 # CMake-generated project formats that have been tested with this CEF binary
 # distribution include:
 #
-# Linux:      Ninja, GCC 7.5.0+, Unix Makefiles
-# MacOS:      Ninja, Xcode 12.2 to 15.0
-# Windows:    Ninja, Visual Studio 2022
+# Linux:      Ninja, Unix Makefiles
+# Mac OS X:   Ninja, Xcode 5+
+# Windows:    Ninja, Visual Studio 2010+
 #
 # Ninja is a cross-platform open-source tool for running fast builds using
 # pre-installed platform toolchains (GNU, clang, Xcode or MSVC). It can be
@@ -36,26 +36,25 @@
 #
 # The below requirements must be met to build this CEF binary distribution.
 #
-# - CMake version 3.21 or newer.
+# - CMake version 2.8.12.1 or newer.
 #
 # - Linux requirements:
-#   Currently supported distributions include Debian 10 (Buster), Ubuntu 18
-#   (Bionic Beaver), and related. Ubuntu 18.04 64-bit with GCC 7.5.0+ is
-#   recommended. Newer versions will likely also work but may not have been
-#   tested.
+#   Currently supported distributions include Debian Wheezy, Ubuntu Precise, and
+#   related. Ubuntu 14.04 64-bit is recommended. Newer versions will likely also
+#   work but may not have been tested.
 #   Required packages include:
 #     build-essential
-#     libgtk3.0-dev     (required by the cefclient target only)
+#     libgtk2.0-dev     (required by the cefclient target only)
+#     libgtkglext1-dev  (required by the cefclient target only)
 #
-# - MacOS requirements:
-#   Xcode 12.2 to 15.4 building on MacOS 11.0 (Big Sur) or newer. The Xcode
-#   command-line tools must also be installed. Newer Xcode versions may not have
-#   been been tested and are not recommended.
+# - Mac OS X requirements:
+#   Xcode 5 or newer building on Mac OS X 10.9 (Mavericks) or newer. Xcode 8.3
+#   and OS X 10.12 are recommended. The Xcode command-line tools must also be
+#   installed. Only 64-bit builds are supported on OS X.
 #
 # - Windows requirements:
-#   Visual Studio 2022 building on Windows 10 or newer. Windows 10/11 64-bit is
-#   recommended. Newer versions will likely also work but may not have been
-#   tested.
+#   Visual Studio 2010 or newer building on Windows 7 or newer. Visual Studio
+#   2015 Update 3 and Windows 10 64-bit are recommended.
 #
 # BUILD EXAMPLES
 #
@@ -76,7 +75,7 @@
 #     > cmake -G "Ninja" -DCMAKE_BUILD_TYPE=Debug ..
 #     > ninja cefclient cefsimple
 #
-# To perform a MacOS build using a 64-bit CEF binary distribution:
+# To perform a Mac OS X build using a 64-bit CEF binary distribution:
 #   Using the Xcode IDE:
 #     > cmake -G "Xcode" -DPROJECT_ARCH="x86_64" ..
 #     Open build\cef.xcodeproj in Xcode and select Product > Build.
@@ -85,54 +84,33 @@
 #     > cmake -G "Ninja" -DPROJECT_ARCH="x86_64" -DCMAKE_BUILD_TYPE=Debug ..
 #     > ninja cefclient cefsimple
 #
-# To perform a MacOS build using an ARM64 CEF binary distribution:
-#   Using the Xcode IDE:
-#     > cmake -G "Xcode" -DPROJECT_ARCH="arm64" ..
-#     Open build\cef.xcodeproj in Xcode and select Product > Build.
-#
-#   Using Ninja:
-#     > cmake -G "Ninja" -DPROJECT_ARCH="arm64" -DCMAKE_BUILD_TYPE=Debug ..
-#     > ninja cefclient cefsimple
-#
 # To perform a Windows build using a 32-bit CEF binary distribution:
-#   Using the Visual Studio 2022 IDE:
-#     > cmake -G "Visual Studio 17" -A Win32 ..
+#   Using the Visual Studio 2015 IDE:
+#     > cmake -G "Visual Studio 14" ..
 #     Open build\cef.sln in Visual Studio and select Build > Build Solution.
 #
-#   Using Ninja with Visual Studio 2022 command-line tools:
+#   Using Ninja with Visual Studio 2015 command-line tools:
 #     (this path may be different depending on your Visual Studio installation)
-#     > "C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvars32.bat"
+#     > "C:\Program Files (x86)\Microsoft Visual Studio 14.0\VC\bin\vcvars32.bat"
 #     > cmake -G "Ninja" -DCMAKE_BUILD_TYPE=Debug ..
 #     > ninja cefclient cefsimple
 #
 # To perform a Windows build using a 64-bit CEF binary distribution:
-#   Using the Visual Studio 2022 IDE:
-#     > cmake -G "Visual Studio 17" -A x64 ..
+#   Using the Visual Studio 2015 IDE:
+#     > cmake -G "Visual Studio 14 Win64" ..
 #     Open build\cef.sln in Visual Studio and select Build > Build Solution.
 #
-#   Using Ninja with Visual Studio 2022 command-line tools:
+#   Using Ninja with Visual Studio 2015 command-line tools:
 #     (this path may be different depending on your Visual Studio installation)
-#     > "C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvars64.bat"
+#     > "C:\Program Files (x86)\Microsoft Visual Studio 14.0\VC\bin\amd64\vcvars64.bat"
 #     > cmake -G "Ninja" -DCMAKE_BUILD_TYPE=Debug ..
 #     > ninja cefclient cefsimple
-#
-# To perform a Windows build using an ARM64 CEF binary distribution:
-#   Using the Visual Studio 2022 IDE:
-#     > cmake -G "Visual Studio 17" -A arm64 ..
-#     Open build\cef.sln in Visual Studio and select Build > Build Solution.
-#
-#   Using Ninja with Visual Studio 2022 command-line tools:
-#     (this path may be different depending on your Visual Studio installation)
-#     > "C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvarsamd64_arm64.bat"
-#     > cmake -G "Ninja" -DCMAKE_BUILD_TYPE=Debug ..
-#     > ninja cefsimple
 
 #
 # Global setup.
 #
 
-# For VS2022 and Xcode 12+ support.
-cmake_minimum_required(VERSION 3.21)
+cmake_minimum_required(VERSION 2.8.12.1)
 
 # Only generate Debug and Release configuration types.
 set(CMAKE_CONFIGURATION_TYPES Debug Release)
@@ -142,7 +120,7 @@ set(CMAKE_CONFIGURATION_TYPES Debug Release)
 project(cef)
 
 # Use folders in the resulting project files.
-set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+set_property(GLOBAL PROPERTY OS_FOLDERS ON)
 
 
 #
@@ -222,35 +200,11 @@ add_subdirectory(${CEF_LIBCEF_DLL_WRAPPER_PATH} libcef_dll_wrapper)
 # Comes from the <target>/CMakeLists.txt file in the current directory.
 # TODO: Change these lines to match your project target when you copy this file.
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+  add_subdirectory(tests/cefclient)
   add_subdirectory(tests/cefsimple)
   add_subdirectory(tests/gtest)
   add_subdirectory(tests/ceftests)
 endif()
 
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/cefclient")
-  add_subdirectory(tests/cefclient)
-endif()
-
 # Display configuration settings.
 PRINT_CEF_CONFIG()
-
-
-#
-# Define the API documentation target.
-#
-
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/Doxyfile")
-  find_package(Doxygen)
-  if(DOXYGEN_FOUND)
-    add_custom_target(apidocs ALL
-      # Generate documentation in the docs/html directory.
-      COMMAND "${DOXYGEN_EXECUTABLE}" Doxyfile
-      # Write a docs/index.html file.
-      COMMAND ${CMAKE_COMMAND} -E echo "<html><head><meta http-equiv=\"refresh\" content=\"0;URL='html/index.html'\"/></head></html>" > docs/index.html
-      WORKING_DIRECTORY "${CEF_ROOT}"
-      COMMENT "Generating API documentation with Doxygen..."
-      VERBATIM )
-  else()
-    message(WARNING "Doxygen must be installed to generate API documentation.")
-  endif()
-endif()
