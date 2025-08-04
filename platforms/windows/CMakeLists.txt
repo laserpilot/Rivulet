@@ -107,15 +107,11 @@ target_link_libraries(Spout2
 
 # Rivulet application - Professional CEF browser implementation
 set(RIVULET_SOURCES
-    src/main.cpp
-    src/application.cpp
-    src/application.h
-    src/d3d11_device.cpp
-    src/d3d11_device.h
+    src/rivulet_main.cpp
+    src/rivulet_browser_window.cpp
+    src/rivulet_browser_window.h
     src/spout_sender.cpp
     src/spout_sender.h
-    src/web_layer.cpp
-    src/web_layer.h
 )
 
 # Create main executable
