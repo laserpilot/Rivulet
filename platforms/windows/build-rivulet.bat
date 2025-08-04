@@ -34,7 +34,7 @@ if exist CMakeFiles rmdir /s /q CMakeFiles
 
 echo.
 echo Configuring Rivulet with CMake...
-cmake -G "Visual Studio 17 2022" -A x64 .
+cmake -G "Visual Studio 17 2022" -A x64 ..
 if errorlevel 1 (
     echo ❌ CMake configuration failed!
     echo.

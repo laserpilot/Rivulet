@@ -3,7 +3,7 @@ echo ============================================
 echo           Building CEF Libraries
 echo ============================================
 
-set CEF_ROOT=C:\Users\laser\Documents\GitHub\cef_binary_138.0.33+g276ed6d+chromium-138.0.7204.169_windows64
+set CEF_ROOT=%~dp0cef
 
 echo CEF_ROOT is set to: %CEF_ROOT%
 echo.
@@ -11,7 +11,8 @@ echo.
 echo Checking if CEF directory exists...
 if not exist "%CEF_ROOT%" (
     echo ❌ ERROR: CEF directory not found at %CEF_ROOT%
-    echo Please verify the path is correct.
+    echo CEF should be located at: platforms/windows/cef/
+    echo Please verify the CEF framework is in place.
     pause
     exit /b 1
 )
