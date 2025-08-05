@@ -156,7 +156,7 @@ void Application::Shutdown() {
 }
 
 bool Application::InitializeCEF() {
-    std::cout << "Initializing CEF..." << std::endl;
+    std::cout << "Initializing CEF with hardware acceleration..." << std::endl;
     
     // CEF settings
     CefSettings settings;
@@ -175,6 +175,29 @@ bool Application::InitializeCEF() {
     CefString(&settings.cache_path).FromASCII(cache_path.c_str());
     CefString(&settings.log_file).FromASCII(log_path.c_str());
     settings.log_severity = LOGSEVERITY_INFO;
+    
+    // Hardware acceleration command line switches
+    CefString(&settings.command_line_args_file).FromASCII("");
+    
+    // Essential flags for hardware acceleration
+    settings.command_line_args_disabled = false;
+    
+    // Enable hardware acceleration and shared texture rendering
+    std::string hw_accel_args = 
+        "--enable-gpu "
+        "--enable-gpu-compositing "
+        "--enable-gpu-rasterization "
+        "--enable-zero-copy "
+        "--disable-gpu-sandbox "
+        "--disable-software-rasterizer "
+        "--enable-direct-composition "
+        "--enable-shared-texture "
+        "--force-gpu-rasterization "
+        "--enable-hardware-overlays";
+    
+    CefString(&settings.command_line_args_file).FromASCII(hw_accel_args.c_str());
+    
+    std::cout << "🚀 CEF configured for hardware acceleration with shared textures" << std::endl;
     
     // Initialize CEF
     CefMainArgs main_args(instance_);

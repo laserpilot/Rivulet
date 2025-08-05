@@ -138,6 +138,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     Spout2
     d3d11
     dxgi
+    d3dcompiler
     comctl32.lib
     crypt32.lib 
     delayimp.lib

@@ -44,16 +44,25 @@ RivuletBrowserWindow::RivuletBrowserWindow(HINSTANCE instance)
     , old_bitmap_(nullptr)
     , bitmap_pixels_(nullptr)
     , bitmap_width_(0)
-    , bitmap_height_(0) {
+    , bitmap_height_(0)
+    , hardware_acceleration_enabled_(false)
+    , use_synchronized_rendering_(true)
+    , new_frame_ready_(false) {
     
     // Initialize critical section for thread synchronization
     InitializeCriticalSection(&bitmap_lock_);
+    
+    // Create frame synchronization event
+    frame_ready_event_ = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 }
 
 RivuletBrowserWindow::~RivuletBrowserWindow() {
     Shutdown();
     
-    // Clean up critical section
+    // Clean up synchronization objects
+    if (frame_ready_event_) {
+        CloseHandle(frame_ready_event_);
+    }
     DeleteCriticalSection(&bitmap_lock_);
 }
 
@@ -90,6 +99,15 @@ bool RivuletBrowserWindow::Initialize(const Config& config) {
     if (!CreateMainWindow(config)) {
         std::cerr << "❌ Failed to create main window" << std::endl;
         return false;
+    }
+    
+    // Initialize DirectX 11 for hardware acceleration
+    if (InitializeDirectX11()) {
+        hardware_acceleration_enabled_ = true;
+        std::cout << "✅ DirectX 11 hardware acceleration enabled" << std::endl;
+    } else {
+        hardware_acceleration_enabled_ = false;
+        std::cout << "⚠️ DirectX 11 initialization failed, using CPU fallback" << std::endl;
     }
     
     // Create client - this will create the browser after window is shown
@@ -261,6 +279,94 @@ int RivuletBrowserWindow::RunMessageLoop() {
     ShowWindow(hwnd_, SW_SHOW);
     UpdateWindow(hwnd_);
     
+    if (use_synchronized_rendering_ && hardware_acceleration_enabled_) {
+        return RunSynchronizedRenderLoop();
+    } else {
+        return RunLegacyMessageLoop();
+    }
+}
+
+int RivuletBrowserWindow::RunSynchronizedRenderLoop() {
+    std::cout << "🚀 Starting V-Sync synchronized render loop for perfect frame timing" << std::endl;
+    std::cout << "🎯 Present(1, 0) will provide hardware-perfect pacing - no manual Sleep needed" << std::endl;
+    
+    MSG msg;
+    DWORD frame_start_time = GetTickCount();
+    int frame_count = 0;
+    bool has_rendered_first_frame = false;
+    
+    while (!is_closing_) {
+        // Handle Windows messages (non-blocking)
+        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) {
+                is_closing_ = true;
+                break;
+            }
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+        
+        if (is_closing_) break;
+        
+        // Let CEF do its work (non-blocking)
+        CefDoMessageLoopWork();
+        
+        // Request a new frame from CEF if browser is ready
+        if (browser_) {
+            // Tell CEF we're ready for a new frame
+            browser_->GetHost()->SendExternalBeginFrame();
+            
+            // Wait for a new frame, but only if we don't have one already
+            // Use a longer timeout for the first frame, shorter for subsequent frames
+            DWORD timeout = has_rendered_first_frame ? 33 : 100; // 33ms = 2 V-Sync periods, 100ms for first frame
+            DWORD wait_result = WaitForSingleObject(frame_ready_event_, timeout);
+            
+            if (wait_result == WAIT_OBJECT_0) {
+                // New frame is ready! Render it immediately
+                if (hardware_acceleration_enabled_ && shared_texture_) {
+                    RenderDirectXFrame(); // Present(1, 0) inside here blocks until V-Sync
+                    has_rendered_first_frame = true;
+                }
+                
+                // Reset frame ready flag
+                new_frame_ready_ = false;
+                frame_count++;
+                
+                // Print FPS every 3 seconds (less spam)
+                DWORD current_time = GetTickCount();
+                if (current_time - frame_start_time >= 3000) {
+                    double fps = (double)frame_count * 1000.0 / (current_time - frame_start_time);
+                    std::cout << "📊 V-Sync locked at " << fps << " FPS (hardware-perfect timing)" << std::endl;
+                    frame_count = 0;
+                    frame_start_time = current_time;
+                }
+            } else if (wait_result == WAIT_TIMEOUT) {
+                // No new frame within timeout period
+                if (has_rendered_first_frame && hardware_acceleration_enabled_ && shared_texture_) {
+                    // Re-present the current frame to maintain smooth display
+                    // Present(1, 0) will still sync to V-Blank for smooth animation
+                    RenderDirectXFrame(); 
+                } else {
+                    // No frame available yet, minimal sleep to avoid 100% CPU
+                    Sleep(1);
+                }
+            }
+        } else {
+            // Browser not ready yet, small sleep to avoid spinning
+            Sleep(1);
+        }
+        
+        // CRITICAL: No manual Sleep here! Present(1, 0) provides perfect V-Sync timing
+        // The Present call inside RenderDirectXFrame blocks until the monitor is ready
+    }
+    
+    std::cout << "✅ V-Sync synchronized render loop finished" << std::endl;
+    return static_cast<int>(msg.wParam);
+}
+
+int RivuletBrowserWindow::RunLegacyMessageLoop() {
+    std::cout << "⏰ Using legacy message loop" << std::endl;
+    
     MSG msg;
     while (!is_closing_) {
         // Handle Windows messages
@@ -307,7 +413,10 @@ void RivuletBrowserWindow::Shutdown() {
     
     spout_sender_.reset();
     
-    // Clean up double buffering resources
+    // Clean up rendering resources
+    if (hardware_acceleration_enabled_) {
+        ShutdownDirectX11();
+    }
     DestroyOffScreenBitmap();
     
     initialized_ = false;
@@ -419,11 +528,14 @@ LRESULT RivuletBrowserWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wPar
             break;
 
     case WM_TIMER: {
-        // Only invalidate the CEF content area, not the entire window.
-        // This prevents the toolbar and controls from flickering.
-        int toolbar_height = toolbar_visible_ ? TOOLBAR_HEIGHT : 0;
-        RECT cef_rect = {0, toolbar_height, window_width_, window_height_};
-        InvalidateRect(hwnd_, &cef_rect, FALSE);
+        // Only handle timer when not using synchronized rendering
+        if (!use_synchronized_rendering_) {
+            // Only invalidate the CEF content area, not the entire window.
+            // This prevents the toolbar and controls from flickering.
+            int toolbar_height = toolbar_visible_ ? TOOLBAR_HEIGHT : 0;
+            RECT cef_rect = {0, toolbar_height, window_width_, window_height_};
+            InvalidateRect(hwnd_, &cef_rect, FALSE);
+        }
         return 0;
     }
             
@@ -501,8 +613,14 @@ void RivuletBrowserWindow::OnCreate(LPCREATESTRUCT lpCreateStruct) {
     // Post message to create CEF browser after window initialization
     PostMessage(hwnd_, WM_USER + 1, 0, 0); // Custom message to create browser
 
-    // Start a timer to drive UI updates at a consistent 60 FPS
-    SetTimer(hwnd_, 1, 16, nullptr); // Timer ID 1, ~16ms interval
+    // Initialize synchronized rendering instead of timer-based updates
+    if (use_synchronized_rendering_) {
+        std::cout << "🎯 Using synchronized render loop for perfect frame timing" << std::endl;
+    } else {
+        // Fallback to timer for legacy mode
+        SetTimer(hwnd_, 1, 16, nullptr); // Timer ID 1, ~16ms interval
+        std::cout << "⏰ Using legacy timer-based rendering" << std::endl;
+    }
 }
 
 void RivuletBrowserWindow::CreateCefBrowser() {
@@ -521,11 +639,24 @@ void RivuletBrowserWindow::CreateCefBrowser() {
     
     // Setting up CEF browser configuration
     
-    // Use off-screen rendering for Spout integration
-    window_info.SetAsWindowless(hwnd_);
+    // Configure CEF for hardware-accelerated shared texture rendering
+    if (hardware_acceleration_enabled_) {
+        window_info.SetAsWindowless(hwnd_);
+        window_info.shared_texture_enabled = true;
+        std::cout << "🚀 CEF configured for shared texture rendering" << std::endl;
+    } else {
+        // Fallback to CPU-based off-screen rendering
+        window_info.SetAsWindowless(hwnd_);
+        std::cout << "⚠️ CEF using CPU fallback rendering" << std::endl;
+    }
     
     CefBrowserSettings browser_settings;
     browser_settings.windowless_frame_rate = 60;
+    
+    if (hardware_acceleration_enabled_) {
+        // Enable hardware acceleration features
+        browser_settings.webgl = STATE_ENABLED;
+    }
     
     // Create browser with startup URL
     std::string startup_url = "https://www.google.com";
@@ -582,11 +713,20 @@ void RivuletBrowserWindow::OnPaint() {
         FillRect(hdc, &toolbar_rect, (HBRUSH)(COLOR_BTNFACE + 1));
     }
     
-    // Draw CEF content from off-screen bitmap  
-    // Lock bitmap access - UI thread reading
-    EnterCriticalSection(&bitmap_lock_);
-    
-    if (off_screen_dc_ && off_screen_bitmap_ && bitmap_pixels_) {
+    if (hardware_acceleration_enabled_) {
+        // Hardware-accelerated rendering using DirectX
+        RenderDirectXFrame();
+        
+        // Fill content area with black (DirectX handles actual rendering)
+        RECT content_rect = {0, toolbar_height, window_width_, window_height_};
+        FillRect(hdc, &content_rect, (HBRUSH)GetStockObject(BLACK_BRUSH));
+        
+    } else {
+        // Legacy CPU-based rendering
+        // Lock bitmap access - UI thread reading
+        EnterCriticalSection(&bitmap_lock_);
+        
+        if (off_screen_dc_ && off_screen_bitmap_ && bitmap_pixels_) {
         RECT content_rect;
         GetClientRect(hwnd_, &content_rect);
         content_rect.top = toolbar_height;
@@ -645,7 +785,7 @@ void RivuletBrowserWindow::OnPaint() {
             FillRect(hdc, &right_bar, black_brush);
         }
         
-        // Now, draw the CEF content on top of the prepared background
+        //Now, draw the CEF content on top of the prepared background
         BOOL result = StretchBlt(hdc, 
                                draw_x, draw_y, draw_width, draw_height,
                                off_screen_dc_, 
@@ -658,17 +798,18 @@ void RivuletBrowserWindow::OnPaint() {
             spout_sender_->SendFrame(static_cast<const uint8_t*>(bitmap_pixels_), bitmap_width_, bitmap_height_);
         }
 
-        if (!result) {
-            std::cerr << "❌ StretchBlt failed - Error: " << GetLastError() << std::endl;
+            if (!result) {
+                std::cerr << "❌ StretchBlt failed - Error: " << GetLastError() << std::endl;
+            }
+        } else {
+            // Clear content area if no frame available
+            RECT content_rect = {0, TOOLBAR_HEIGHT, window_width_, window_height_};
+            FillRect(hdc, &content_rect, (HBRUSH)(COLOR_WINDOW + 1));
         }
-    } else {
-        // Clear content area if no frame available
-        RECT content_rect = {0, TOOLBAR_HEIGHT, window_width_, window_height_};
-        FillRect(hdc, &content_rect, (HBRUSH)(COLOR_WINDOW + 1));
+        
+        // Unlock bitmap access
+        LeaveCriticalSection(&bitmap_lock_);
     }
-    
-    // Unlock bitmap access
-    LeaveCriticalSection(&bitmap_lock_);
     
     EndPaint(hwnd_, &ps);
 }
@@ -707,8 +848,10 @@ void RivuletBrowserWindow::OnCommand(WPARAM wParam) {
 }
 
 void RivuletBrowserWindow::OnDestroy() {
-    // Clean up the UI timer
-    KillTimer(hwnd_, 1);
+    // Clean up the UI timer (if using legacy mode)
+    if (!use_synchronized_rendering_) {
+        KillTimer(hwnd_, 1);
+    }
     
     // Save final settings before closing
     SaveSettings();
@@ -980,7 +1123,439 @@ void RivuletBrowserWindow::OnKeyEvent(UINT message, WPARAM wParam, LPARAM lParam
     }
 }
 
-// Double buffering implementation
+// DirectX 11 hardware acceleration implementation
+bool RivuletBrowserWindow::InitializeDirectX11() {
+    DXGI_SWAP_CHAIN_DESC swap_chain_desc = {};
+    swap_chain_desc.BufferCount = 1;
+    swap_chain_desc.BufferDesc.Width = spout_width_;
+    swap_chain_desc.BufferDesc.Height = spout_height_;
+    swap_chain_desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    swap_chain_desc.BufferDesc.RefreshRate.Numerator = 60;
+    swap_chain_desc.BufferDesc.RefreshRate.Denominator = 1;
+    swap_chain_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    swap_chain_desc.OutputWindow = hwnd_;
+    swap_chain_desc.SampleDesc.Count = 1;
+    swap_chain_desc.Windowed = TRUE;
+    
+    D3D_FEATURE_LEVEL feature_levels[] = {
+        D3D_FEATURE_LEVEL_11_1,
+        D3D_FEATURE_LEVEL_11_0,
+    };
+    
+    HRESULT hr = D3D11CreateDeviceAndSwapChain(
+        nullptr,
+        D3D_DRIVER_TYPE_HARDWARE,
+        nullptr,
+        D3D11_CREATE_DEVICE_DEBUG,  // Remove in release
+        feature_levels,
+        ARRAYSIZE(feature_levels),
+        D3D11_SDK_VERSION,
+        &swap_chain_desc,
+        &swap_chain_,
+        &d3d11_device_,
+        nullptr,
+        &d3d11_context_
+    );
+    
+    if (FAILED(hr)) {
+        std::cerr << "❌ Failed to create DirectX 11 device and swap chain: " << std::hex << hr << std::endl;
+        return false;
+    }
+    
+    if (!CreateDirectXRenderTarget()) {
+        std::cerr << "❌ Failed to create DirectX render target" << std::endl;
+        return false;
+    }
+    
+    if (!CreateTextureRenderingPipeline()) {
+        std::cerr << "❌ Failed to create texture rendering pipeline" << std::endl;
+        return false;
+    }
+    
+    std::cout << "✅ DirectX 11 device and rendering pipeline initialized successfully" << std::endl;
+    return true;
+}
+
+void RivuletBrowserWindow::ShutdownDirectX11() {
+    render_target_view_.Reset();
+    shared_texture_.Reset();
+    swap_chain_.Reset();
+    d3d11_context_.Reset();
+    d3d11_device_.Reset();
+    std::cout << "✅ DirectX 11 resources cleaned up" << std::endl;
+}
+
+bool RivuletBrowserWindow::CreateDirectXRenderTarget() {
+    ComPtr<ID3D11Texture2D> back_buffer;
+    HRESULT hr = swap_chain_->GetBuffer(0, IID_PPV_ARGS(&back_buffer));
+    if (FAILED(hr)) {
+        std::cerr << "❌ Failed to get swap chain back buffer: " << std::hex << hr << std::endl;
+        return false;
+    }
+    
+    hr = d3d11_device_->CreateRenderTargetView(back_buffer.Get(), nullptr, &render_target_view_);
+    if (FAILED(hr)) {
+        std::cerr << "❌ Failed to create render target view: " << std::hex << hr << std::endl;
+        return false;
+    }
+    
+    return true;
+}
+
+bool RivuletBrowserWindow::CreateTextureRenderingPipeline() {
+    // Simple vertex shader for a fullscreen quad
+    const char* vertex_shader_source = R"(
+        struct VSInput {
+            float2 position : POSITION;
+            float2 texcoord : TEXCOORD0;
+        };
+        
+        struct VSOutput {
+            float4 position : SV_POSITION;
+            float2 texcoord : TEXCOORD0;
+        };
+        
+        VSOutput main(VSInput input) {
+            VSOutput output;
+            output.position = float4(input.position, 0.0f, 1.0f);
+            output.texcoord = input.texcoord;
+            return output;
+        }
+    )";
+    
+    // Simple pixel shader to sample the texture
+    const char* pixel_shader_source = R"(
+        Texture2D shaderTexture : register(t0);
+        SamplerState samplerState : register(s0);
+        
+        struct PSInput {
+            float4 position : SV_POSITION;
+            float2 texcoord : TEXCOORD0;
+        };
+        
+        float4 main(PSInput input) : SV_TARGET {
+            return shaderTexture.Sample(samplerState, input.texcoord);
+        }
+    )";
+    
+    // Compile vertex shader
+    ComPtr<ID3DBlob> vs_blob;
+    ComPtr<ID3DBlob> error_blob;
+    HRESULT hr = D3DCompile(
+        vertex_shader_source,
+        strlen(vertex_shader_source),
+        nullptr,
+        nullptr,
+        nullptr,
+        "main",
+        "vs_5_0",
+        0,
+        0,
+        &vs_blob,
+        &error_blob
+    );
+    
+    if (FAILED(hr)) {
+        if (error_blob) {
+            std::cerr << "❌ Vertex shader compile error: " << (char*)error_blob->GetBufferPointer() << std::endl;
+        }
+        return false;
+    }
+    
+    hr = d3d11_device_->CreateVertexShader(
+        vs_blob->GetBufferPointer(),
+        vs_blob->GetBufferSize(),
+        nullptr,
+        &vertex_shader_
+    );
+    
+    if (FAILED(hr)) {
+        std::cerr << "❌ Failed to create vertex shader: " << std::hex << hr << std::endl;
+        return false;
+    }
+    
+    // Compile pixel shader
+    ComPtr<ID3DBlob> ps_blob;
+    hr = D3DCompile(
+        pixel_shader_source,
+        strlen(pixel_shader_source),
+        nullptr,
+        nullptr,
+        nullptr,
+        "main",
+        "ps_5_0",
+        0,
+        0,
+        &ps_blob,
+        &error_blob
+    );
+    
+    if (FAILED(hr)) {
+        if (error_blob) {
+            std::cerr << "❌ Pixel shader compile error: " << (char*)error_blob->GetBufferPointer() << std::endl;
+        }
+        return false;
+    }
+    
+    hr = d3d11_device_->CreatePixelShader(
+        ps_blob->GetBufferPointer(),
+        ps_blob->GetBufferSize(),
+        nullptr,
+        &pixel_shader_
+    );
+    
+    if (FAILED(hr)) {
+        std::cerr << "❌ Failed to create pixel shader: " << std::hex << hr << std::endl;
+        return false;
+    }
+    
+    // Create input layout
+    D3D11_INPUT_ELEMENT_DESC layout[] = {
+        {"POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
+        {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 8, D3D11_INPUT_PER_VERTEX_DATA, 0}
+    };
+    
+    hr = d3d11_device_->CreateInputLayout(
+        layout,
+        ARRAYSIZE(layout),
+        vs_blob->GetBufferPointer(),
+        vs_blob->GetBufferSize(),
+        &input_layout_
+    );
+    
+    if (FAILED(hr)) {
+        std::cerr << "❌ Failed to create input layout: " << std::hex << hr << std::endl;
+        return false;
+    }
+    
+    // Create vertex buffer for fullscreen quad
+    struct Vertex {
+        float position[2];
+        float texcoord[2];
+    };
+    
+    Vertex vertices[] = {
+        // Triangle 1
+        {{-1.0f, -1.0f}, {0.0f, 1.0f}}, // Bottom-left
+        {{-1.0f,  1.0f}, {0.0f, 0.0f}}, // Top-left  
+        {{ 1.0f, -1.0f}, {1.0f, 1.0f}}, // Bottom-right
+        
+        // Triangle 2
+        {{ 1.0f, -1.0f}, {1.0f, 1.0f}}, // Bottom-right
+        {{-1.0f,  1.0f}, {0.0f, 0.0f}}, // Top-left
+        {{ 1.0f,  1.0f}, {1.0f, 0.0f}}  // Top-right
+    };
+    
+    D3D11_BUFFER_DESC buffer_desc = {};
+    buffer_desc.Usage = D3D11_USAGE_DEFAULT;
+    buffer_desc.ByteWidth = sizeof(vertices);
+    buffer_desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    
+    D3D11_SUBRESOURCE_DATA init_data = {};
+    init_data.pSysMem = vertices;
+    
+    hr = d3d11_device_->CreateBuffer(&buffer_desc, &init_data, &vertex_buffer_);
+    if (FAILED(hr)) {
+        std::cerr << "❌ Failed to create vertex buffer: " << std::hex << hr << std::endl;
+        return false;
+    }
+    
+    // Create sampler state
+    D3D11_SAMPLER_DESC sampler_desc = {};
+    sampler_desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler_desc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sampler_desc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sampler_desc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sampler_desc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    sampler_desc.MinLOD = 0;
+    sampler_desc.MaxLOD = D3D11_FLOAT32_MAX;
+    
+    hr = d3d11_device_->CreateSamplerState(&sampler_desc, &sampler_state_);
+    if (FAILED(hr)) {
+        std::cerr << "❌ Failed to create sampler state: " << std::hex << hr << std::endl;
+        return false;
+    }
+    
+    std::cout << "✅ Texture rendering pipeline created successfully" << std::endl;
+    return true;
+}
+
+void RivuletBrowserWindow::RenderDirectXFrame() {
+    if (!d3d11_context_ || !render_target_view_) return;
+    
+    // Set render target
+    d3d11_context_->OMSetRenderTargets(1, render_target_view_.GetAddressOf(), nullptr);
+    
+    // Set viewport
+    D3D11_VIEWPORT viewport = {};
+    viewport.Width = (float)spout_width_;
+    viewport.Height = (float)spout_height_;  
+    viewport.MinDepth = 0.0f;
+    viewport.MaxDepth = 1.0f;
+    d3d11_context_->RSSetViewports(1, &viewport);
+    
+    // Clear the render target
+    float clear_color[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+    d3d11_context_->ClearRenderTargetView(render_target_view_.Get(), clear_color);
+    
+    // If we have a shared texture from CEF, render it
+    if (shared_texture_ && texture_srv_) {
+        RenderTexturedQuad();
+    }
+    
+    // Present the frame (1 = V-Sync enabled)
+    swap_chain_->Present(1, 0);
+}
+
+void RivuletBrowserWindow::RenderTexturedQuad() {
+    if (!d3d11_context_ || !vertex_shader_ || !pixel_shader_ || !texture_srv_) return;
+    
+    // Set shaders
+    d3d11_context_->VSSetShader(vertex_shader_.Get(), nullptr, 0);
+    d3d11_context_->PSSetShader(pixel_shader_.Get(), nullptr, 0);
+    
+    // Set input layout
+    d3d11_context_->IASetInputLayout(input_layout_.Get());
+    
+    // Set vertex buffer
+    UINT stride = sizeof(float) * 4; // position(2) + texcoord(2)
+    UINT offset = 0;
+    d3d11_context_->IASetVertexBuffers(0, 1, vertex_buffer_.GetAddressOf(), &stride, &offset);
+    
+    // Set primitive topology
+    d3d11_context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    
+    // Set texture and sampler
+    d3d11_context_->PSSetShaderResources(0, 1, texture_srv_.GetAddressOf());
+    d3d11_context_->PSSetSamplers(0, 1, sampler_state_.GetAddressOf());
+    
+    // Draw the quad (6 vertices = 2 triangles)
+    d3d11_context_->Draw(6, 0);
+}
+
+void RivuletBrowserWindow::OnSharedTextureUpdate(HANDLE shared_handle) {
+    if (!shared_handle) {
+        std::cerr << "❌ Invalid shared handle received" << std::endl;
+        return;
+    }
+    
+    // Try multiple approaches to open the shared texture
+    
+    // Approach 1: Try with our D3D11 device
+    if (d3d11_device_) {
+        HRESULT hr = d3d11_device_->OpenSharedResource(
+            shared_handle,
+            IID_PPV_ARGS(&shared_texture_)
+        );
+        
+        if (SUCCEEDED(hr)) {
+            std::cout << "✅ Shared texture opened with our D3D11 device" << std::endl;
+            
+            // Get texture description to extract dimensions
+            D3D11_TEXTURE2D_DESC desc;
+            shared_texture_->GetDesc(&desc);
+            
+            std::cout << "📐 Texture dimensions: " << desc.Width << "x" << desc.Height << std::endl;
+            std::cout << "🎨 Texture format: " << desc.Format << std::endl;
+            
+            // Create shader resource view for rendering
+            texture_srv_.Reset(); // Release previous SRV
+            D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+            srv_desc.Format = desc.Format;
+            srv_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+            srv_desc.Texture2D.MipLevels = 1;
+            srv_desc.Texture2D.MostDetailedMip = 0;
+            
+            HRESULT srv_hr = d3d11_device_->CreateShaderResourceView(
+                shared_texture_.Get(),
+                &srv_desc,
+                &texture_srv_
+            );
+            
+            if (FAILED(srv_hr)) {
+                std::cerr << "❌ Failed to create shader resource view: " << std::hex << srv_hr << std::endl;
+                return;
+            }
+            
+            // Send texture directly to Spout for zero-copy sharing!
+            if (spout_sender_) {
+                bool success = spout_sender_->SendTexture(shared_texture_.Get(), desc.Width, desc.Height);
+                if (success) {
+                    std::cout << "✅ Hardware-accelerated frame sent to Spout (zero-copy)" << std::endl;
+                } else {
+                    std::cerr << "❌ Failed to send texture to Spout" << std::endl;
+                }
+            }
+            
+            // Signal that a new frame is ready for synchronized rendering
+            if (use_synchronized_rendering_) {
+                new_frame_ready_ = true;
+                SetEvent(frame_ready_event_);
+            } else {
+                // Legacy: trigger window redraw
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
+            return;
+        } else {
+            std::cerr << "❌ Failed to open shared texture with our device: " << std::hex << hr << std::endl;
+        }
+    }
+    
+    // Approach 2: Try opening with a new device created specifically for shared resources
+    ComPtr<ID3D11Device> shared_device;
+    ComPtr<ID3D11DeviceContext> shared_context;
+    
+    D3D_FEATURE_LEVEL feature_levels[] = {
+        D3D_FEATURE_LEVEL_11_1,
+        D3D_FEATURE_LEVEL_11_0,
+    };
+    
+    HRESULT hr = D3D11CreateDevice(
+        nullptr,
+        D3D_DRIVER_TYPE_HARDWARE,
+        nullptr,
+        0, // No debug flag for shared device
+        feature_levels,
+        ARRAYSIZE(feature_levels),
+        D3D11_SDK_VERSION,
+        &shared_device,
+        nullptr,
+        &shared_context
+    );
+    
+    if (SUCCEEDED(hr)) {
+        ComPtr<ID3D11Texture2D> temp_texture;
+        hr = shared_device->OpenSharedResource(
+            shared_handle,
+            IID_PPV_ARGS(&temp_texture)
+        );
+        
+        if (SUCCEEDED(hr)) {
+            std::cout << "✅ Shared texture opened with separate device" << std::endl;
+            
+            // Get texture description
+            D3D11_TEXTURE2D_DESC desc;
+            temp_texture->GetDesc(&desc);
+            
+            std::cout << "📐 Texture dimensions: " << desc.Width << "x" << desc.Height << std::endl;
+            std::cout << "🎨 Texture format: " << desc.Format << std::endl;
+            
+            // TODO: Copy texture to our device or use it directly with Spout
+            // For now, store it for the next frame
+            shared_texture_ = temp_texture;
+            
+            // Trigger window redraw
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
+        } else {
+            std::cerr << "❌ Failed to open shared texture with separate device: " << std::hex << hr << std::endl;
+        }
+    }
+    
+    std::cerr << "❌ All approaches to open shared texture failed" << std::endl;
+}
+
+// Legacy CPU fallback implementation
 bool RivuletBrowserWindow::CreateOffScreenBitmap(int width, int height) {
     // Clean up existing bitmap if dimensions changed
     if (off_screen_bitmap_ && (bitmap_width_ != width || bitmap_height_ != height)) {
@@ -1259,12 +1834,37 @@ void RivuletBrowserWindow::BrowserClient::OnPaint(CefRefPtr<CefBrowser> browser,
                                                  int height) {
     if (type != PET_VIEW) return;
     
-    if (buffer) {
+    // This method is only called when hardware acceleration is disabled
+    // (CPU fallback mode)
+    if (!parent_->hardware_acceleration_enabled_ && buffer) {
         // Update off-screen bitmap for display
         parent_->UpdateOffScreenBitmap(buffer, width, height);
         
         // DO NOT invalidate here. The UI thread's WM_TIMER is now responsible
         // for driving repaints at a stable rate, decoupling the threads.
+    }
+}
+
+void RivuletBrowserWindow::BrowserClient::OnAcceleratedPaint(CefRefPtr<CefBrowser> browser,
+                                                           PaintElementType type,
+                                                           const RectList& dirtyRects,
+                                                           const CefAcceleratedPaintInfo& info) {
+    if (type != PET_VIEW) return;
+    
+    // This method is called when hardware acceleration is enabled
+    // (shared texture mode)
+    if (parent_->hardware_acceleration_enabled_) {
+        if (parent_->use_synchronized_rendering_) {
+            // Synchronized mode: minimal logging to avoid spam
+            static int frame_counter = 0;
+            if (++frame_counter % 60 == 0) {
+                std::cout << "🎯 " << frame_counter << " synchronized frames received" << std::endl;
+            }
+        } else {
+            std::cout << "🚀 Received hardware-accelerated frame from CEF" << std::endl;
+        }
+        
+        parent_->OnSharedTextureUpdate(info.shared_texture_handle);
     }
 }
 

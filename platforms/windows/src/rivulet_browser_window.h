@@ -10,6 +10,12 @@
 #include <commdlg.h>
 #include <memory>
 #include <string>
+#include <d3d11.h>
+#include <dxgi.h>
+#include <d3dcompiler.h>
+#include <wrl/client.h>
+
+using Microsoft::WRL::ComPtr;
 
 #include "include/cef_browser.h"
 #include "include/cef_client.h"
@@ -36,6 +42,8 @@ public:
 
     bool Initialize(const Config& config);
     int RunMessageLoop();
+    int RunSynchronizedRenderLoop();
+    int RunLegacyMessageLoop();
     void Shutdown();
 
     CefRefPtr<CefBrowser> GetBrowser() const { return browser_; }
@@ -73,10 +81,21 @@ private:
     void OnMouseEvent(UINT message, WPARAM wParam, LPARAM lParam);
     void OnKeyEvent(UINT message, WPARAM wParam, LPARAM lParam);
     
-    // Double buffering management
+    // Hardware acceleration management
+    bool InitializeDirectX11();
+    void ShutdownDirectX11();
+    bool CreateDirectXRenderTarget();
+    bool CreateTextureRenderingPipeline();
+    void RenderDirectXFrame();
+    void RenderTexturedQuad();
+    
+    // Legacy CPU fallback management
     bool CreateOffScreenBitmap(int width, int height);
     void DestroyOffScreenBitmap();
     void UpdateOffScreenBitmap(const void* cef_buffer, int width, int height);
+    
+    // Shared texture handling
+    void OnSharedTextureUpdate(HANDLE shared_handle);
     
     // Settings persistence
     void LoadSettings();
@@ -132,7 +151,7 @@ private:
         void OnTitleChange(CefRefPtr<CefBrowser> browser,
                           const CefString& title) override;
 
-        // CefRenderHandler methods (for off-screen rendering to Spout)
+        // CefRenderHandler methods (for hardware-accelerated shared texture rendering)
         void GetViewRect(CefRefPtr<CefBrowser> browser, CefRect& rect) override;
         void OnPaint(CefRefPtr<CefBrowser> browser,
                     PaintElementType type,
@@ -140,6 +159,10 @@ private:
                     const void* buffer,
                     int width,
                     int height) override;
+        void OnAcceleratedPaint(CefRefPtr<CefBrowser> browser,
+                               PaintElementType type,
+                               const RectList& dirtyRects,
+                               const CefAcceleratedPaintInfo& info) override;
 
         IMPLEMENT_REFCOUNTING(BrowserClient);
 
@@ -186,16 +209,37 @@ private:
     int spout_width_;
     int spout_height_;
     
-    // Double buffering for smooth 60fps display
+    // DirectX 11 hardware acceleration
+    ComPtr<ID3D11Device> d3d11_device_;
+    ComPtr<ID3D11DeviceContext> d3d11_context_;
+    ComPtr<IDXGISwapChain> swap_chain_;
+    ComPtr<ID3D11RenderTargetView> render_target_view_;
+    ComPtr<ID3D11Texture2D> shared_texture_;
+    
+    // Texture rendering pipeline
+    ComPtr<ID3D11VertexShader> vertex_shader_;
+    ComPtr<ID3D11PixelShader> pixel_shader_;
+    ComPtr<ID3D11InputLayout> input_layout_;
+    ComPtr<ID3D11Buffer> vertex_buffer_;
+    ComPtr<ID3D11SamplerState> sampler_state_;
+    ComPtr<ID3D11ShaderResourceView> texture_srv_;
+    
+    // Frame synchronization
+    volatile bool new_frame_ready_;
+    HANDLE frame_ready_event_;
+    
+    // Legacy CPU fallback (for compatibility)
     HDC off_screen_dc_;
     HBITMAP off_screen_bitmap_;
-    HBITMAP old_bitmap_;  // To restore when cleaning up
+    HBITMAP old_bitmap_;
     void* bitmap_pixels_;
     int bitmap_width_;
     int bitmap_height_;
-    
-    // Thread synchronization for bitmap access
     CRITICAL_SECTION bitmap_lock_;
+    
+    // Rendering mode
+    bool hardware_acceleration_enabled_;
+    bool use_synchronized_rendering_;
 
     // Control IDs
     static constexpr int ID_BACK = 1001;
