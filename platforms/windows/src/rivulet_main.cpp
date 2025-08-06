@@ -17,12 +17,28 @@ extern "C" {
     __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 }
 
-// Simple CEF application class
+// CEF application class with GPU adapter synchronization
 class RivuletCefApp : public CefApp {
 public:
-    RivuletCefApp() {}
+    RivuletCefApp(const std::string& gpu_adapter_luid) : gpu_adapter_luid_(gpu_adapter_luid) {}
+
+    // Add command-line arguments for GPU synchronization
+    void OnBeforeCommandLineProcessing(const CefString& process_type,
+                                     CefRefPtr<CefCommandLine> command_line) override {
+        if (!gpu_adapter_luid_.empty()) {
+            command_line->AppendSwitch("enable-gpu");
+            command_line->AppendSwitch("enable-gpu-compositing");  
+            command_line->AppendSwitch("enable-shared-texture");
+            command_line->AppendSwitchWithValue("gpu-adapter-luid", gpu_adapter_luid_);
+            
+            std::cout << "🔧 Added CEF GPU arguments: --gpu-adapter-luid=" << gpu_adapter_luid_ << std::endl;
+        }
+    }
 
     IMPLEMENT_REFCOUNTING(RivuletCefApp);
+
+private:
+    std::string gpu_adapter_luid_;
 };
 
 int APIENTRY wWinMain(HINSTANCE hInstance,
@@ -68,16 +84,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance,
     CefString(&settings.log_file).FromASCII((exe_dir + "\\cef.log").c_str());
     settings.log_severity = LOGSEVERITY_INFO;
     
-    CefRefPtr<RivuletCefApp> app = new RivuletCefApp();
-    if (!CefInitialize(main_args, settings, app, nullptr)) {
-        std::cerr << "❌ Failed to initialize CEF" << std::endl;
-        return -1;
-    }
-    
-    std::cout << "✅ CEF initialized successfully" << std::endl;
-    
     try {
-        // Create browser window
+        // STEP 1: Pre-initialize DirectX to get GPU adapter LUID for CEF synchronization
+        std::cout << "🔍 Pre-initializing DirectX to determine GPU adapter for CEF..." << std::endl;
         auto browser_window = std::make_unique<Rivulet::RivuletBrowserWindow>(hInstance);
         
         Rivulet::RivuletBrowserWindow::Config config;
@@ -88,12 +97,35 @@ int APIENTRY wWinMain(HINSTANCE hInstance,
         config.spout_height = 1080;  // Independent of window display size
         config.window_title = "Rivulet - Professional Browser";
         
+        // Pre-initialize only the parts needed to get LUID
+        if (!browser_window->PreInitializeForLuid()) {
+            std::cerr << "❌ Failed to pre-initialize for LUID detection" << std::endl;
+            return -1;
+        }
+        
+        // Get the adapter LUID string for CEF
+        std::string adapter_luid = browser_window->GetSelectedAdapterLuidString();
+        std::cout << "🎯 GPU Adapter LUID for CEF: " << adapter_luid << std::endl;
+        
+        // STEP 2: Now initialize CEF with the adapter LUID  
+        std::cout << "🚀 Initializing CEF with synchronized GPU adapter..." << std::endl;
+        
+        CefRefPtr<RivuletCefApp> app = new RivuletCefApp(adapter_luid);
+        if (!CefInitialize(main_args, settings, app, nullptr)) {
+            std::cerr << "❌ Failed to initialize CEF with GPU synchronization" << std::endl;
+            return -1;
+        }
+        
+        std::cout << "✅ CEF initialized with GPU adapter synchronization" << std::endl;
+        
+        // STEP 3: Complete the browser window initialization
         std::cout << "🎯 Configuration:" << std::endl;
         std::cout << "   Spout Output: " << config.spout_width << "x" << config.spout_height << std::endl;
         std::cout << "   Window will be sized to match aspect ratio" << std::endl;
+        std::cout << "   GPU Adapter: synchronized between CEF and DirectX" << std::endl;
         
-        if (!browser_window->Initialize(config)) {
-            std::cerr << "❌ Failed to initialize browser window" << std::endl;
+        if (!browser_window->CompleteInitialization(config)) {
+            std::cerr << "❌ Failed to complete browser window initialization" << std::endl;
             CefShutdown();
             return -1;
         }

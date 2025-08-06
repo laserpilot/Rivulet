@@ -12,6 +12,8 @@
 #include <windowsx.h>
 #include <fstream>
 #include <shlobj.h>
+#include <sstream>
+#include <iomanip>
 
 namespace Rivulet {
 
@@ -101,12 +103,15 @@ bool RivuletBrowserWindow::Initialize(const Config& config) {
         return false;
     }
     
-    // Initialize DirectX 11 for hardware acceleration
+    // Initialize DirectX 11 with BGRA support for CEF shared texture compatibility
     if (InitializeDirectX11()) {
         hardware_acceleration_enabled_ = true;
-        std::cout << "✅ DirectX 11 hardware acceleration enabled" << std::endl;
+        use_synchronized_rendering_ = false; // Keep disabled until we verify shared textures work
+        std::cout << "✅ DirectX 11 hardware acceleration enabled with BGRA support" << std::endl;
+        std::cout << "🎯 Testing CEF shared texture compatibility..." << std::endl;
     } else {
         hardware_acceleration_enabled_ = false;
+        use_synchronized_rendering_ = false;
         std::cout << "⚠️ DirectX 11 initialization failed, using CPU fallback" << std::endl;
     }
     
@@ -115,6 +120,72 @@ bool RivuletBrowserWindow::Initialize(const Config& config) {
     
     initialized_ = true;
     std::cout << "✅ Rivulet Browser Window initialized successfully" << std::endl;
+    return true;
+}
+
+bool RivuletBrowserWindow::PreInitializeForLuid() {
+    std::cout << "🔍 Pre-initializing GPU adapter detection..." << std::endl;
+    
+    // Only enumerate adapters to get the LUID - no device creation needed
+    if (!EnumerateGPUAdapters()) {
+        std::cerr << "❌ Failed to enumerate GPU adapters" << std::endl;
+        return false;
+    }
+    
+    std::cout << "✅ GPU adapter detected and LUID extracted" << std::endl;
+    return true;
+}
+
+bool RivuletBrowserWindow::CompleteInitialization(const Config& config) {
+    if (initialized_) return true;
+    
+    std::cout << "🔧 Completing browser window initialization..." << std::endl;
+    
+    spout_width_ = config.spout_width;
+    spout_height_ = config.spout_height;
+    
+    // Load saved settings (may override config defaults)
+    LoadSettings();
+    
+    // Calculate window size to match Spout aspect ratio
+    float spout_aspect = (float)spout_width_ / spout_height_;
+    int desired_content_height = config.window_height;
+    int calculated_content_width = (int)(desired_content_height * spout_aspect);
+    
+    // Set window dimensions (content area matches Spout aspect ratio)
+    window_width_ = calculated_content_width;
+    window_height_ = desired_content_height;
+    
+    // Initialize Spout sender
+    spout_sender_ = std::make_unique<RivuletSpoutSender>();
+    if (!spout_sender_->Initialize("Rivulet Output")) {
+        std::cerr << "❌ Failed to initialize Spout sender" << std::endl;
+        return false;
+    }
+    
+    // Create main window
+    if (!CreateMainWindow(config)) {
+        std::cerr << "❌ Failed to create main window" << std::endl;
+        return false;
+    }
+    
+    // Now initialize DirectX with the synchronized adapter
+    if (InitializeDirectX11()) {
+        hardware_acceleration_enabled_ = true;
+        use_synchronized_rendering_ = true; // Now we can enable since CEF uses same GPU
+        std::cout << "✅ DirectX 11 hardware acceleration with synchronized GPU adapter" << std::endl;
+        std::cout << "🎯 CEF and DirectX are now using the same GPU - shared textures should work!" << std::endl;
+    } else {
+        hardware_acceleration_enabled_ = false;
+        use_synchronized_rendering_ = false;
+        std::cout << "❌ Failed to initialize DirectX 11 with synchronized adapter" << std::endl;
+    }
+    
+    // Create client - this will create the browser after window is shown
+    client_ = new BrowserClient(this);
+    
+    initialized_ = true;
+    std::cout << "✅ Browser window initialization completed with GPU synchronization" << std::endl;
     return true;
 }
 
@@ -287,13 +358,15 @@ int RivuletBrowserWindow::RunMessageLoop() {
 }
 
 int RivuletBrowserWindow::RunSynchronizedRenderLoop() {
-    std::cout << "🚀 Starting V-Sync synchronized render loop for perfect frame timing" << std::endl;
-    std::cout << "🎯 Present(1, 0) will provide hardware-perfect pacing - no manual Sleep needed" << std::endl;
+    std::cout << "🚀 Starting V-Sync locked render loop - Present(1,0) drives perfect timing" << std::endl;
+    std::cout << "🎯 Philosophy: Render every V-Sync using newest available frame" << std::endl;
     
     MSG msg;
     DWORD frame_start_time = GetTickCount();
     int frame_count = 0;
-    bool has_rendered_first_frame = false;
+    int new_frame_count = 0;
+    int repeated_frame_count = 0;
+    bool has_first_frame = false;
     
     while (!is_closing_) {
         // Handle Windows messages (non-blocking)
@@ -313,54 +386,68 @@ int RivuletBrowserWindow::RunSynchronizedRenderLoop() {
         
         // Request a new frame from CEF if browser is ready
         if (browser_) {
-            // Tell CEF we're ready for a new frame
+            // Tell CEF we're ready for a new frame (non-blocking)
             browser_->GetHost()->SendExternalBeginFrame();
             
-            // Wait for a new frame, but only if we don't have one already
-            // Use a longer timeout for the first frame, shorter for subsequent frames
-            DWORD timeout = has_rendered_first_frame ? 33 : 100; // 33ms = 2 V-Sync periods, 100ms for first frame
-            DWORD wait_result = WaitForSingleObject(frame_ready_event_, timeout);
+            // NON-BLOCKING check: Has a new frame arrived since last V-Sync?
+            DWORD wait_result = WaitForSingleObject(frame_ready_event_, 0);
             
             if (wait_result == WAIT_OBJECT_0) {
-                // New frame is ready! Render it immediately
-                if (hardware_acceleration_enabled_ && shared_texture_) {
-                    RenderDirectXFrame(); // Present(1, 0) inside here blocks until V-Sync
-                    has_rendered_first_frame = true;
-                }
-                
-                // Reset frame ready flag
+                // New frame arrived! Update will happen in OnSharedTextureUpdate
                 new_frame_ready_ = false;
-                frame_count++;
+                new_frame_count++;
+                has_first_frame = true;
                 
-                // Print FPS every 3 seconds (less spam)
-                DWORD current_time = GetTickCount();
-                if (current_time - frame_start_time >= 3000) {
-                    double fps = (double)frame_count * 1000.0 / (current_time - frame_start_time);
-                    std::cout << "📊 V-Sync locked at " << fps << " FPS (hardware-perfect timing)" << std::endl;
-                    frame_count = 0;
-                    frame_start_time = current_time;
+                // Render the NEW frame and present at next V-Sync
+                if (hardware_acceleration_enabled_ && shared_texture_) {
+                    RenderDirectXFrame(); // Present(1, 0) blocks until V-Sync
                 }
-            } else if (wait_result == WAIT_TIMEOUT) {
-                // No new frame within timeout period
-                if (has_rendered_first_frame && hardware_acceleration_enabled_ && shared_texture_) {
-                    // Re-present the current frame to maintain smooth display
-                    // Present(1, 0) will still sync to V-Blank for smooth animation
-                    RenderDirectXFrame(); 
+            } else {
+                // No new frame since last check - render existing frame
+                if (has_first_frame && hardware_acceleration_enabled_ && shared_texture_) {
+                    repeated_frame_count++;
+                    RenderDirectXFrame(); // Present(1, 0) blocks until V-Sync - perfect pacing!
                 } else {
-                    // No frame available yet, minimal sleep to avoid 100% CPU
-                    Sleep(1);
+                    // Still waiting for very first frame, minimal render to avoid black screen
+                    if (hardware_acceleration_enabled_) {
+                        RenderDirectXFrame(); // Present(1, 0) maintains V-Sync timing
+                    } else {
+                        Sleep(1); // Fallback only when no hardware acceleration
+                    }
                 }
             }
+            
+            frame_count++;
+            
+            // Print detailed timing stats every 5 seconds
+            DWORD current_time = GetTickCount();
+            if (current_time - frame_start_time >= 5000) {
+                double fps = (double)frame_count * 1000.0 / (current_time - frame_start_time);
+                double new_frame_rate = (double)new_frame_count * 1000.0 / (current_time - frame_start_time);
+                
+                std::cout << "📊 Perfect V-Sync: " << fps << " FPS display | " 
+                         << new_frame_rate << " FPS new frames | "
+                         << repeated_frame_count << " repeated frames" << std::endl;
+                
+                frame_count = 0;
+                new_frame_count = 0; 
+                repeated_frame_count = 0;
+                frame_start_time = current_time;
+            }
         } else {
-            // Browser not ready yet, small sleep to avoid spinning
-            Sleep(1);
+            // Browser not ready yet - maintain V-Sync timing anyway
+            if (hardware_acceleration_enabled_) {
+                RenderDirectXFrame(); // Black screen but perfect timing
+            } else {
+                Sleep(1);
+            }
         }
         
-        // CRITICAL: No manual Sleep here! Present(1, 0) provides perfect V-Sync timing
-        // The Present call inside RenderDirectXFrame blocks until the monitor is ready
+        // CRITICAL: Loop timing is ONLY controlled by Present(1, 0)
+        // No Sleep() calls that would interfere with V-Sync pacing
     }
     
-    std::cout << "✅ V-Sync synchronized render loop finished" << std::endl;
+    std::cout << "✅ V-Sync locked render loop finished" << std::endl;
     return static_cast<int>(msg.wParam);
 }
 
@@ -713,8 +800,14 @@ void RivuletBrowserWindow::OnPaint() {
         FillRect(hdc, &toolbar_rect, (HBRUSH)(COLOR_BTNFACE + 1));
     }
     
-    if (hardware_acceleration_enabled_) {
-        // Hardware-accelerated rendering using DirectX
+    if (hardware_acceleration_enabled_ && use_synchronized_rendering_) {
+        // Synchronized rendering mode - DirectX handles all content rendering in message loop
+        // Just fill content area with black, controls will draw on top
+        RECT content_rect = {0, toolbar_height, window_width_, window_height_};
+        FillRect(hdc, &content_rect, (HBRUSH)GetStockObject(BLACK_BRUSH));
+        
+    } else if (hardware_acceleration_enabled_) {
+        // Legacy hardware acceleration mode (no synchronized rendering)
         RenderDirectXFrame();
         
         // Fill content area with black (DirectX handles actual rendering)
@@ -1125,6 +1218,28 @@ void RivuletBrowserWindow::OnKeyEvent(UINT message, WPARAM wParam, LPARAM lParam
 
 // DirectX 11 hardware acceleration implementation
 bool RivuletBrowserWindow::InitializeDirectX11() {
+    std::cout << "🔍 Initializing DirectX 11 with CEF-compatible shared texture support..." << std::endl;
+    
+    // Ensure we have a selected adapter (enumerate if not done yet)
+    if (!selected_adapter_) {
+        std::cout << "🔍 No adapter selected yet, enumerating now..." << std::endl;
+        if (!EnumerateGPUAdapters()) {
+            return false;
+        }
+    }
+    
+    if (!selected_adapter_) {
+        std::cerr << "❌ No adapter selected after enumeration" << std::endl;
+        return false;
+    }
+    
+    // Get info about our selected adapter
+    DXGI_ADAPTER_DESC adapter_desc;
+    selected_adapter_->GetDesc(&adapter_desc);
+    std::wcout << L"🎯 Creating DirectX device on: " << adapter_desc.Description << std::endl;
+    std::cout << "🔢 Adapter LUID: " << std::hex << adapter_desc.AdapterLuid.HighPart << ":" << adapter_desc.AdapterLuid.LowPart << std::dec << std::endl;
+    std::cout << "✅ Using the EXACT SAME adapter instance that was used to generate the LUID for CEF" << std::endl;
+    
     DXGI_SWAP_CHAIN_DESC swap_chain_desc = {};
     swap_chain_desc.BufferCount = 1;
     swap_chain_desc.BufferDesc.Width = spout_width_;
@@ -1142,11 +1257,29 @@ bool RivuletBrowserWindow::InitializeDirectX11() {
         D3D_FEATURE_LEVEL_11_0,
     };
     
+    // Create device with flags that match CEF's device creation
+    UINT create_device_flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+    
+    // Add flags that CEF typically uses for shared texture compatibility
+    create_device_flags |= D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS;
+    // This flag prevents D3D from making internal threading optimizations that could 
+    // interfere with shared resource access between different devices
+    
+#ifdef _DEBUG
+    create_device_flags |= D3D11_CREATE_DEVICE_DEBUG;
+#endif
+    
+    std::cout << "🔧 Device creation flags: " << std::hex << create_device_flags << std::dec << std::endl;
+    
+    std::cout << "🔍 Creating DirectX device on selected adapter..." << std::endl;
+    std::cout << "   Device flags: " << std::hex << create_device_flags << std::dec << std::endl;
+    std::cout << "   Swap chain: " << swap_chain_desc.BufferDesc.Width << "x" << swap_chain_desc.BufferDesc.Height << std::endl;
+    
     HRESULT hr = D3D11CreateDeviceAndSwapChain(
+        selected_adapter_.Get(),  // Use the EXACT SAME adapter instance that CEF uses
+        D3D_DRIVER_TYPE_UNKNOWN,  // Must use UNKNOWN when specifying adapter
         nullptr,
-        D3D_DRIVER_TYPE_HARDWARE,
-        nullptr,
-        D3D11_CREATE_DEVICE_DEBUG,  // Remove in release
+        create_device_flags,
         feature_levels,
         ARRAYSIZE(feature_levels),
         D3D11_SDK_VERSION,
@@ -1158,8 +1291,36 @@ bool RivuletBrowserWindow::InitializeDirectX11() {
     );
     
     if (FAILED(hr)) {
-        std::cerr << "❌ Failed to create DirectX 11 device and swap chain: " << std::hex << hr << std::endl;
-        return false;
+        std::cerr << "❌ Failed to create DirectX 11 device and swap chain" << std::endl;
+        std::cerr << "   HRESULT: 0x" << std::hex << hr << std::dec << std::endl;
+        std::cerr << "   This may indicate adapter compatibility issues" << std::endl;
+        
+        // Try fallback with reduced flags but same adapter 
+        std::cout << "🔄 Attempting fallback with reduced device flags on same adapter..." << std::endl;
+        UINT fallback_flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT; // Remove threading optimization flag
+        hr = D3D11CreateDeviceAndSwapChain(
+            selected_adapter_.Get(),  // Still use the same adapter - this is critical!
+            D3D_DRIVER_TYPE_UNKNOWN,  // Must use UNKNOWN when specifying adapter
+            nullptr,
+            fallback_flags,
+            feature_levels,
+            ARRAYSIZE(feature_levels),
+            D3D11_SDK_VERSION,
+            &swap_chain_desc,
+            &swap_chain_,
+            &d3d11_device_,
+            nullptr,
+            &d3d11_context_
+        );
+        
+        if (FAILED(hr)) {
+            std::cerr << "❌ Fallback also failed: 0x" << std::hex << hr << std::dec << std::endl;
+            return false;
+        }
+        
+        std::cout << "✅ Fallback adapter creation succeeded" << std::endl;
+    } else {
+        std::cout << "✅ DirectX device created on selected adapter" << std::endl;
     }
     
     if (!CreateDirectXRenderTarget()) {
@@ -1183,6 +1344,89 @@ void RivuletBrowserWindow::ShutdownDirectX11() {
     d3d11_context_.Reset();
     d3d11_device_.Reset();
     std::cout << "✅ DirectX 11 resources cleaned up" << std::endl;
+}
+
+bool RivuletBrowserWindow::EnumerateGPUAdapters() {
+    std::cout << "🔍 Enumerating GPU adapters..." << std::endl;
+    
+    // Create DXGI factory for GPU enumeration
+    ComPtr<IDXGIFactory> dxgi_factory;
+    HRESULT hr = CreateDXGIFactory(IID_PPV_ARGS(&dxgi_factory));
+    if (FAILED(hr)) {
+        std::cerr << "❌ Failed to create DXGI factory: " << std::hex << hr << std::endl;
+        return false;
+    }
+    
+    // Enumerate all available GPU adapters to find the best one
+    std::cout << "🔍 Scanning available GPU adapters..." << std::endl;
+    
+    ComPtr<IDXGIAdapter> selected_adapter;
+    DXGI_ADAPTER_DESC best_adapter_desc = {};
+    SIZE_T max_vram = 0;
+    bool found_discrete = false;
+    
+    for (UINT adapter_index = 0; ; ++adapter_index) {
+        ComPtr<IDXGIAdapter> current_adapter;
+        hr = dxgi_factory->EnumAdapters(adapter_index, &current_adapter);
+        if (hr == DXGI_ERROR_NOT_FOUND) {
+            break; // No more adapters
+        }
+        if (FAILED(hr)) {
+            std::cerr << "⚠️ Failed to enumerate adapter " << adapter_index << ": " << std::hex << hr << std::endl;
+            continue;
+        }
+        
+        DXGI_ADAPTER_DESC current_desc;
+        current_adapter->GetDesc(&current_desc);
+        
+        std::wcout << L"🎮 Found GPU " << adapter_index << L": " << current_desc.Description << std::endl;
+        std::cout << "   💾 VRAM: " << (current_desc.DedicatedVideoMemory / 1024 / 1024) << " MB" << std::endl;
+        std::cout << "   🔢 LUID: " << std::hex << current_desc.AdapterLuid.HighPart << ":" << current_desc.AdapterLuid.LowPart << std::dec << std::endl;
+        
+        // Prefer discrete GPUs (those with significant dedicated VRAM)
+        bool is_discrete = current_desc.DedicatedVideoMemory > (128 * 1024 * 1024); // > 128MB indicates discrete GPU
+        
+        // Selection criteria: prefer discrete GPU with most VRAM, or integrated GPU if no discrete found
+        bool should_select = false;
+        if (!found_discrete && is_discrete) {
+            // First discrete GPU found - always prefer over integrated
+            should_select = true;
+            found_discrete = true;
+        } else if (found_discrete && is_discrete && current_desc.DedicatedVideoMemory > max_vram) {
+            // Better discrete GPU found
+            should_select = true;
+        } else if (!found_discrete && !is_discrete && current_desc.DedicatedVideoMemory > max_vram) {
+            // Better integrated GPU (fallback if no discrete GPU available)
+            should_select = true;
+        }
+        
+        if (should_select) {
+            selected_adapter = current_adapter;
+            best_adapter_desc = current_desc;
+            max_vram = current_desc.DedicatedVideoMemory;
+            selected_adapter_luid_ = current_desc.AdapterLuid;
+            selected_adapter_ = current_adapter; // Store the adapter instance!
+        }
+    }
+    
+    if (!selected_adapter) {
+        std::cerr << "❌ No suitable GPU adapter found" << std::endl;
+        return false;
+    }
+    
+    std::wcout << L"🎯 Selected GPU adapter: " << best_adapter_desc.Description << std::endl;
+    std::cout << "💾 VRAM: " << (best_adapter_desc.DedicatedVideoMemory / 1024 / 1024) << " MB" << std::endl;
+    std::cout << "🔢 Adapter LUID: " << std::hex << selected_adapter_luid_.HighPart << ":" << selected_adapter_luid_.LowPart << std::dec << std::endl;
+    std::cout << "✅ GPU adapter selection complete" << std::endl;
+    
+    return true;
+}
+
+std::string RivuletBrowserWindow::GetSelectedAdapterLuidString() const {
+    // Convert LUID to string format for CEF command line argument
+    std::stringstream ss;
+    ss << std::hex << selected_adapter_luid_.HighPart << ":" << selected_adapter_luid_.LowPart;
+    return ss.str();
 }
 
 bool RivuletBrowserWindow::CreateDirectXRenderTarget() {
@@ -1439,24 +1683,50 @@ void RivuletBrowserWindow::OnSharedTextureUpdate(HANDLE shared_handle) {
         return;
     }
     
-    // Try multiple approaches to open the shared texture
+    // Only log shared texture updates occasionally to avoid spam
+    static int update_count = 0;
+    update_count++;
+    if (update_count == 1 || update_count % 300 == 0) { // Log first update and every 300th (10 seconds at 30fps)
+        std::cout << "🔍 Shared texture update #" << update_count << " (handle: " << shared_handle << ")" << std::endl;
+    }
     
     // Approach 1: Try with our D3D11 device
     if (d3d11_device_) {
-        HRESULT hr = d3d11_device_->OpenSharedResource(
-            shared_handle,
-            IID_PPV_ARGS(&shared_texture_)
-        );
+        // Use the modern OpenSharedResource1 method (we know this works from debugging)
+        ComPtr<ID3D11Device1> device1;
+        HRESULT hr = d3d11_device_.As(&device1);
         
         if (SUCCEEDED(hr)) {
-            std::cout << "✅ Shared texture opened with our D3D11 device" << std::endl;
+            ComPtr<ID3D11Resource> shared_resource;
+            hr = device1->OpenSharedResource1(
+                shared_handle,
+                IID_PPV_ARGS(&shared_resource)
+            );
             
+            if (SUCCEEDED(hr)) {
+                hr = shared_resource.As(&shared_texture_);
+            }
+        }
+        
+        // Fallback to legacy method if needed
+        if (FAILED(hr)) {
+            hr = d3d11_device_->OpenSharedResource(
+                shared_handle,
+                IID_PPV_ARGS(&shared_texture_)
+            );
+        }
+        
+        if (SUCCEEDED(hr)) {
             // Get texture description to extract dimensions
             D3D11_TEXTURE2D_DESC desc;
             shared_texture_->GetDesc(&desc);
             
-            std::cout << "📐 Texture dimensions: " << desc.Width << "x" << desc.Height << std::endl;
-            std::cout << "🎨 Texture format: " << desc.Format << std::endl;
+            // Only log success on first update
+            if (update_count == 1) {
+                std::cout << "✅ Shared texture opened successfully!" << std::endl;
+                std::cout << "📐 Texture dimensions: " << desc.Width << "x" << desc.Height << std::endl;
+                std::cout << "🎨 Texture format: " << desc.Format << std::endl;
+            }
             
             // Create shader resource view for rendering
             texture_srv_.Reset(); // Release previous SRV
@@ -1473,17 +1743,25 @@ void RivuletBrowserWindow::OnSharedTextureUpdate(HANDLE shared_handle) {
             );
             
             if (FAILED(srv_hr)) {
-                std::cerr << "❌ Failed to create shader resource view: " << std::hex << srv_hr << std::endl;
+                if (update_count == 1) {
+                    std::cerr << "❌ Failed to create shader resource view: " << std::hex << srv_hr << std::endl;
+                }
                 return;
             }
             
             // Send texture directly to Spout for zero-copy sharing!
             if (spout_sender_) {
                 bool success = spout_sender_->SendTexture(shared_texture_.Get(), desc.Width, desc.Height);
-                if (success) {
-                    std::cout << "✅ Hardware-accelerated frame sent to Spout (zero-copy)" << std::endl;
-                } else {
-                    std::cerr << "❌ Failed to send texture to Spout" << std::endl;
+                
+                // Only log Spout success/failure on first frame or after status changes
+                static bool last_success = true;
+                if (update_count == 1 || success != last_success) {
+                    if (success) {
+                        std::cout << "✅ Hardware-accelerated frame sent to Spout (zero-copy)" << std::endl;
+                    } else {
+                        std::cerr << "❌ Failed to send texture to Spout" << std::endl;
+                    }
+                    last_success = success;
                 }
             }
             
@@ -1497,7 +1775,9 @@ void RivuletBrowserWindow::OnSharedTextureUpdate(HANDLE shared_handle) {
             }
             return;
         } else {
-            std::cerr << "❌ Failed to open shared texture with our device: " << std::hex << hr << std::endl;
+            if (update_count == 1) {
+                std::cerr << "❌ Failed to open shared texture with synchronized device: 0x" << std::hex << hr << std::dec << std::endl;
+            }
         }
     }
     
@@ -1548,11 +1828,15 @@ void RivuletBrowserWindow::OnSharedTextureUpdate(HANDLE shared_handle) {
             InvalidateRect(hwnd_, nullptr, FALSE);
             return;
         } else {
-            std::cerr << "❌ Failed to open shared texture with separate device: " << std::hex << hr << std::endl;
+            if (update_count == 1) {
+                std::cerr << "❌ Failed to open shared texture with separate device: " << std::hex << hr << std::endl;
+            }
         }
     }
     
-    std::cerr << "❌ All approaches to open shared texture failed" << std::endl;
+    if (update_count == 1) {
+        std::cerr << "❌ All approaches to open shared texture failed" << std::endl;
+    }
 }
 
 // Legacy CPU fallback implementation

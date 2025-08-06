@@ -41,6 +41,8 @@ public:
     ~RivuletBrowserWindow();
 
     bool Initialize(const Config& config);
+    bool PreInitializeForLuid();
+    bool CompleteInitialization(const Config& config);
     int RunMessageLoop();
     int RunSynchronizedRenderLoop();
     int RunLegacyMessageLoop();
@@ -48,6 +50,9 @@ public:
 
     CefRefPtr<CefBrowser> GetBrowser() const { return browser_; }
     HWND GetWindowHandle() const { return hwnd_; }
+    
+    // GPU adapter synchronization
+    std::string GetSelectedAdapterLuidString() const;
 
 private:
     // Window creation and management
@@ -83,11 +88,13 @@ private:
     
     // Hardware acceleration management
     bool InitializeDirectX11();
+    bool EnumerateGPUAdapters(); // Only enumerate adapters, don't create device
     void ShutdownDirectX11();
     bool CreateDirectXRenderTarget();
     bool CreateTextureRenderingPipeline();
     void RenderDirectXFrame();
     void RenderTexturedQuad();
+    
     
     // Legacy CPU fallback management
     bool CreateOffScreenBitmap(int width, int height);
@@ -227,6 +234,10 @@ private:
     // Frame synchronization
     volatile bool new_frame_ready_;
     HANDLE frame_ready_event_;
+    
+    // GPU adapter information for CEF synchronization
+    LUID selected_adapter_luid_;
+    ComPtr<IDXGIAdapter> selected_adapter_; // Store the actual adapter instance
     
     // Legacy CPU fallback (for compatibility)
     HDC off_screen_dc_;
