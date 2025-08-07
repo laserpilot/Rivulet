@@ -28,7 +28,7 @@ namespace Rivulet {
 class RivuletBrowserWindow {
 public:
     struct Config {
-        std::string startup_url = "https://www.google.com";
+        std::string startup_url = "https://www.testufo.com";
         int window_width = 1024;
         int window_height = 768;
         int spout_width = 1024;
@@ -58,7 +58,9 @@ private:
     // Window creation and management
     bool CreateMainWindow(const Config& config);
     void CreateControls();
+    void CreateDirectXChildWindow();
     void CreateCefBrowser(); // Delayed CEF browser creation
+    void SetDWMScalingOptimizations();
 
     // Window procedure
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
@@ -94,6 +96,7 @@ private:
     bool CreateTextureRenderingPipeline();
     void RenderDirectXFrame();
     void RenderTexturedQuad();
+    void ResizeDirectXBuffers(int width, int height);
     
     
     // Legacy CPU fallback management
@@ -194,6 +197,7 @@ private:
     HWND edit_hwnd_;    // URL edit box
     HWND go_hwnd_;      // Go button
     HWND resolution_hwnd_; // Resolution dropdown
+    HWND directx_child_hwnd_; // Dedicated child window for DirectX content
     WNDPROC edit_wndproc_old_;
     WNDPROC resolution_wndproc_old_;
     

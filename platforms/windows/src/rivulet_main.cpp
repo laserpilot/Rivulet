@@ -33,6 +33,26 @@ public:
             
             std::cout << "🔧 Added CEF GPU arguments: --gpu-adapter-luid=" << gpu_adapter_luid_ << std::endl;
         }
+        
+        // cef-mixer inspired flags for optimal frame synchronization
+        
+        // Disable CEF's own V-Sync - our DirectX Present(1,0) will be the sole timing authority
+        command_line->AppendSwitch("disable-gpu-vsync"); // Essential for preventing timing conflicts
+        
+        // Enable modern surface synchronization to prevent source tearing
+        command_line->AppendSwitch("enable-surface-synchronization"); // Essential for tear-free frames
+        
+        // Tighten frame scheduling to our SendExternalBeginFrame calls
+        command_line->AppendSwitch("enable-begin-frame-scheduling"); // Essential for low latency
+
+        // The --use-gl=desktop flag was causing the GPU process to fail initialization.
+        // Removing it allows CEF to use its default ANGLE (D3D11) backend, which is required for shared textures.
+        command_line->AppendSwitchWithValue("enable-gpu-rasterization", "true");
+        
+        std::cout << "🔧 Added comprehensive CEF flags for tear-free rendering:" << std::endl;
+        std::cout << "   --disable-gpu-vsync" << std::endl;
+        std::cout << "   --enable-surface-synchronization" << std::endl; 
+        std::cout << "   --enable-begin-frame-scheduling" << std::endl;
     }
 
     IMPLEMENT_REFCOUNTING(RivuletCefApp);
@@ -90,11 +110,11 @@ int APIENTRY wWinMain(HINSTANCE hInstance,
         auto browser_window = std::make_unique<Rivulet::RivuletBrowserWindow>(hInstance);
         
         Rivulet::RivuletBrowserWindow::Config config;
-        config.startup_url = "https://www.google.com";
+        config.startup_url = "https://www.testufo.com";
         config.window_height = 600;  // Desired window content height 
         // window_width will be calculated to match spout aspect ratio
-        config.spout_width = 1920;   // High-resolution Spout output
-        config.spout_height = 1080;  // Independent of window display size
+        config.spout_width = 1280;   // 720p Spout output
+        config.spout_height = 720;   // Independent of window display size
         config.window_title = "Rivulet - Professional Browser";
         
         // Pre-initialize only the parts needed to get LUID

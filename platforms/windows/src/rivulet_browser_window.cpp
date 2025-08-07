@@ -14,6 +14,9 @@
 #include <shlobj.h>
 #include <sstream>
 #include <iomanip>
+#include <dwmapi.h>
+
+#pragma comment(lib, "dwmapi.lib")
 
 namespace Rivulet {
 
@@ -220,7 +223,67 @@ bool RivuletBrowserWindow::CreateMainWindow(const Config& config) {
         return false;
     }
     
+    // Optimize DWM scaling quality for high-resolution content
+    SetDWMScalingOptimizations();
+    
     return true;
+}
+
+void RivuletBrowserWindow::SetDWMScalingOptimizations() {
+    if (!hwnd_) return;
+    
+    // Enable DWM composition for better scaling quality
+    BOOL dwm_enabled = FALSE;
+    if (SUCCEEDED(DwmIsCompositionEnabled(&dwm_enabled)) && dwm_enabled) {
+        std::cout << "🎨 DWM composition is enabled - applying scaling optimizations" << std::endl;
+        
+        // Set window attribute to indicate high-quality graphics content
+        // This hints to DWM to use higher-quality scaling algorithms
+        DWMNCRENDERINGPOLICY policy = DWMNCRP_ENABLED;
+        DwmSetWindowAttribute(hwnd_, DWMWA_NCRENDERING_POLICY, &policy, sizeof(policy));
+        
+        // Enable blur behind for better composition (optional)
+        DWM_BLURBEHIND blur_behind = {};
+        blur_behind.dwFlags = DWM_BB_ENABLE;
+        blur_behind.fEnable = FALSE; // Disable blur but enable composition optimizations
+        DwmEnableBlurBehindWindow(hwnd_, &blur_behind);
+        
+        // Set extended frame into client area to improve scaling
+        MARGINS margins = {0, 0, 0, 0}; // No extended frame, just enable composition path
+        DwmExtendFrameIntoClientArea(hwnd_, &margins);
+        
+        std::cout << "✅ DWM scaling optimizations applied" << std::endl;
+    } else {
+        std::cout << "⚠️ DWM composition disabled - using basic scaling" << std::endl;
+    }
+}
+
+void RivuletBrowserWindow::CreateDirectXChildWindow() {
+    if (!hwnd_) return;
+    
+    // Calculate content area dimensions (below toolbar)
+    RECT client_rect;
+    GetClientRect(hwnd_, &client_rect);
+    
+    int content_x = 0;
+    int content_y = toolbar_visible_ ? TOOLBAR_HEIGHT : 0;
+    int content_width = client_rect.right - client_rect.left;
+    int content_height = (client_rect.bottom - client_rect.top) - content_y;
+    
+    // Create a static control that will host our DirectX content
+    directx_child_hwnd_ = CreateWindowW(
+        L"STATIC", L"DirectX Content Host",
+        WS_CHILD | WS_VISIBLE | SS_BLACKRECT, // Black background initially
+        content_x, content_y, content_width, content_height,
+        hwnd_, nullptr, instance_, nullptr
+    );
+    
+    if (!directx_child_hwnd_) {
+        std::cerr << "❌ Failed to create DirectX child window" << std::endl;
+        return;
+    }
+    
+    std::cout << "✅ DirectX child window created (" << content_width << "x" << content_height << ")" << std::endl;
 }
 
 void RivuletBrowserWindow::CreateControls() {
@@ -337,6 +400,9 @@ void RivuletBrowserWindow::CreateControls() {
         SetWindowLongPtr(resolution_edit, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
     }
     
+    // Create dedicated child window for DirectX content
+    CreateDirectXChildWindow();
+    
     std::cout << "✅ Browser controls created" << std::endl;
 }
 
@@ -419,15 +485,13 @@ int RivuletBrowserWindow::RunSynchronizedRenderLoop() {
             
             frame_count++;
             
-            // Print detailed timing stats every 5 seconds
+            // Print brief timing stats every 30 seconds
             DWORD current_time = GetTickCount();
-            if (current_time - frame_start_time >= 5000) {
+            if (current_time - frame_start_time >= 30000) {
                 double fps = (double)frame_count * 1000.0 / (current_time - frame_start_time);
                 double new_frame_rate = (double)new_frame_count * 1000.0 / (current_time - frame_start_time);
                 
-                std::cout << "📊 Perfect V-Sync: " << fps << " FPS display | " 
-                         << new_frame_rate << " FPS new frames | "
-                         << repeated_frame_count << " repeated frames" << std::endl;
+                std::cout << "📊 " << (int)fps << " FPS | " << (int)new_frame_rate << " new" << std::endl;
                 
                 frame_count = 0;
                 new_frame_count = 0; 
@@ -746,7 +810,7 @@ void RivuletBrowserWindow::CreateCefBrowser() {
     }
     
     // Create browser with startup URL
-    std::string startup_url = "https://www.google.com";
+    std::string startup_url = "https://www.testufo.com";
     
     // CEF browser will use off-screen rendering
     
@@ -787,27 +851,49 @@ void RivuletBrowserWindow::OnSize() {
                     BUTTON_WIDTH, BUTTON_HEIGHT,
                     SWP_NOZORDER);
     }
+    
+    // Resize DirectX child window to fill content area below toolbar
+    if (directx_child_hwnd_) {
+        int content_x = 0;
+        int content_y = toolbar_visible_ ? TOOLBAR_HEIGHT : 0;
+        int content_width = rect.right - rect.left;
+        int content_height = (rect.bottom - rect.top) - content_y;
+        
+        SetWindowPos(directx_child_hwnd_, nullptr,
+                    content_x, content_y, content_width, content_height,
+                    SWP_NOZORDER);
+                    
+        // Resize DirectX buffers to match the new child window size
+        if (hardware_acceleration_enabled_) {
+            ResizeDirectXBuffers(content_width, content_height);
+        }
+    }
 }
 
 void RivuletBrowserWindow::OnPaint() {
     PAINTSTRUCT ps;
     HDC hdc = BeginPaint(hwnd_, &ps);
     
-    // Draw toolbar background (only if visible)
+    // Calculate toolbar height for layout purposes
     int toolbar_height = toolbar_visible_ ? TOOLBAR_HEIGHT : 0;
-    if (toolbar_visible_) {
-        RECT toolbar_rect = {0, 0, window_width_, TOOLBAR_HEIGHT};
-        FillRect(hdc, &toolbar_rect, (HBRUSH)(COLOR_BTNFACE + 1));
-    }
     
     if (hardware_acceleration_enabled_ && use_synchronized_rendering_) {
-        // Synchronized rendering mode - DirectX handles all content rendering in message loop
-        // Just fill content area with black, controls will draw on top
-        RECT content_rect = {0, toolbar_height, window_width_, window_height_};
-        FillRect(hdc, &content_rect, (HBRUSH)GetStockObject(BLACK_BRUSH));
+        // Synchronized rendering mode with child window - toolbar renders normally, content handled by child
+        if (toolbar_visible_) {
+            RECT toolbar_rect = {0, 0, window_width_, TOOLBAR_HEIGHT};
+            FillRect(hdc, &toolbar_rect, (HBRUSH)(COLOR_BTNFACE + 1));
+        }
+        // Content area is handled by DirectX child window - no need to draw here
         
     } else if (hardware_acceleration_enabled_) {
         // Legacy hardware acceleration mode (no synchronized rendering)
+        
+        // Draw toolbar background in legacy mode
+        if (toolbar_visible_) {
+            RECT toolbar_rect = {0, 0, window_width_, TOOLBAR_HEIGHT};
+            FillRect(hdc, &toolbar_rect, (HBRUSH)(COLOR_BTNFACE + 1));
+        }
+        
         RenderDirectXFrame();
         
         // Fill content area with black (DirectX handles actual rendering)
@@ -815,6 +901,11 @@ void RivuletBrowserWindow::OnPaint() {
         FillRect(hdc, &content_rect, (HBRUSH)GetStockObject(BLACK_BRUSH));
         
     } else {
+        // CPU rendering mode - draw toolbar background
+        if (toolbar_visible_) {
+            RECT toolbar_rect = {0, 0, window_width_, TOOLBAR_HEIGHT};
+            FillRect(hdc, &toolbar_rect, (HBRUSH)(COLOR_BTNFACE + 1));
+        }
         // Legacy CPU-based rendering
         // Lock bitmap access - UI thread reading
         EnterCriticalSection(&bitmap_lock_);
@@ -1040,6 +1131,16 @@ void RivuletBrowserWindow::OnResolutionChange() {
                 window_width_, window_height_ + TOOLBAR_HEIGHT,
                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     
+    // Reinitialize Spout sender with new resolution
+    if (spout_sender_) {
+        spout_sender_->Shutdown();
+        if (!spout_sender_->Initialize("Rivulet Output")) {
+            std::cerr << "❌ Failed to reinitialize Spout sender with new resolution" << std::endl;
+        } else {
+            std::cout << "✅ Spout sender reinitialized for " << new_width << "x" << new_height << std::endl;
+        }
+    }
+    
     // Trigger layout update
     OnSize();
     
@@ -1240,17 +1341,36 @@ bool RivuletBrowserWindow::InitializeDirectX11() {
     std::cout << "🔢 Adapter LUID: " << std::hex << adapter_desc.AdapterLuid.HighPart << ":" << adapter_desc.AdapterLuid.LowPart << std::dec << std::endl;
     std::cout << "✅ Using the EXACT SAME adapter instance that was used to generate the LUID for CEF" << std::endl;
     
+    // Use child window as target and size if available, otherwise fallback to main window
+    HWND target_hwnd = directx_child_hwnd_ ? directx_child_hwnd_ : hwnd_;
+    
+    // Get target window dimensions for swap chain sizing
+    RECT target_rect = {};
+    GetClientRect(target_hwnd, &target_rect);
+    int target_width = target_rect.right - target_rect.left;
+    int target_height = target_rect.bottom - target_rect.top;
+    
+    // Use reasonable defaults if window isn't properly sized yet
+    if (target_width <= 0 || target_height <= 0) {
+        target_width = 800;
+        target_height = 600;
+        std::cout << "⚠️ Using fallback swap chain dimensions: " << target_width << "x" << target_height << std::endl;
+    }
+    
     DXGI_SWAP_CHAIN_DESC swap_chain_desc = {};
-    swap_chain_desc.BufferCount = 1;
-    swap_chain_desc.BufferDesc.Width = spout_width_;
-    swap_chain_desc.BufferDesc.Height = spout_height_;
-    swap_chain_desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    swap_chain_desc.BufferCount = 2;  // Double-buffering to eliminate tearing
+    swap_chain_desc.BufferDesc.Width = target_width;
+    swap_chain_desc.BufferDesc.Height = target_height;
+    swap_chain_desc.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; // Match CEF's native format for direct DWM composition
     swap_chain_desc.BufferDesc.RefreshRate.Numerator = 60;
     swap_chain_desc.BufferDesc.RefreshRate.Denominator = 1;
     swap_chain_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    swap_chain_desc.OutputWindow = hwnd_;
+    swap_chain_desc.OutputWindow = target_hwnd;
     swap_chain_desc.SampleDesc.Count = 1;
     swap_chain_desc.Windowed = TRUE;
+    swap_chain_desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+    
+    std::cout << "🎯 DirectX swap chain targeting " << (directx_child_hwnd_ ? "child window" : "main window") << " at " << target_width << "x" << target_height << " with BGRA format" << std::endl;
     
     D3D_FEATURE_LEVEL feature_levels[] = {
         D3D_FEATURE_LEVEL_11_1,
@@ -1260,11 +1380,8 @@ bool RivuletBrowserWindow::InitializeDirectX11() {
     // Create device with flags that match CEF's device creation
     UINT create_device_flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
     
-    // Add flags that CEF typically uses for shared texture compatibility
-    create_device_flags |= D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS;
-    // This flag prevents D3D from making internal threading optimizations that could 
-    // interfere with shared resource access between different devices
-    
+    // The PREVENT_INTERNAL_THREADING_OPTIMIZATIONS flag can interfere with driver-level
+    // synchronization for shared resources. Removing it aligns with cef-mixer's simpler approach.
 #ifdef _DEBUG
     create_device_flags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
@@ -1572,19 +1689,19 @@ bool RivuletBrowserWindow::CreateTextureRenderingPipeline() {
         return false;
     }
     
-    // Create vertex buffer for fullscreen quad
+    // Create vertex buffer for fullscreen quad (child window positioning handles layout)
     struct Vertex {
         float position[2];
         float texcoord[2];
     };
     
     Vertex vertices[] = {
-        // Triangle 1
+        // Triangle 1 - Fullscreen quad
         {{-1.0f, -1.0f}, {0.0f, 1.0f}}, // Bottom-left
         {{-1.0f,  1.0f}, {0.0f, 0.0f}}, // Top-left  
         {{ 1.0f, -1.0f}, {1.0f, 1.0f}}, // Bottom-right
         
-        // Triangle 2
+        // Triangle 2 - Fullscreen quad
         {{ 1.0f, -1.0f}, {1.0f, 1.0f}}, // Bottom-right
         {{-1.0f,  1.0f}, {0.0f, 0.0f}}, // Top-left
         {{ 1.0f,  1.0f}, {1.0f, 0.0f}}  // Top-right
@@ -1604,15 +1721,16 @@ bool RivuletBrowserWindow::CreateTextureRenderingPipeline() {
         return false;
     }
     
-    // Create sampler state
+    // Create sampler state with high-quality anisotropic filtering
     D3D11_SAMPLER_DESC sampler_desc = {};
-    sampler_desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler_desc.Filter = D3D11_FILTER_ANISOTROPIC; // Highest quality scaling filter
     sampler_desc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
     sampler_desc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
     sampler_desc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
     sampler_desc.ComparisonFunc = D3D11_COMPARISON_NEVER;
     sampler_desc.MinLOD = 0;
     sampler_desc.MaxLOD = D3D11_FLOAT32_MAX;
+    sampler_desc.MaxAnisotropy = 16; // Maximum anisotropy for best quality
     
     hr = d3d11_device_->CreateSamplerState(&sampler_desc, &sampler_state_);
     if (FAILED(hr)) {
@@ -1624,31 +1742,88 @@ bool RivuletBrowserWindow::CreateTextureRenderingPipeline() {
     return true;
 }
 
+
 void RivuletBrowserWindow::RenderDirectXFrame() {
     if (!d3d11_context_ || !render_target_view_) return;
     
     // Set render target
     d3d11_context_->OMSetRenderTargets(1, render_target_view_.GetAddressOf(), nullptr);
     
-    // Set viewport
+    // Set viewport to match current child window size (after ResizeBuffers)
+    RECT child_rect = {};
+    HWND target_hwnd = directx_child_hwnd_ ? directx_child_hwnd_ : hwnd_;
+    GetClientRect(target_hwnd, &child_rect);
+    
     D3D11_VIEWPORT viewport = {};
-    viewport.Width = (float)spout_width_;
-    viewport.Height = (float)spout_height_;  
+    viewport.Width = (float)(child_rect.right - child_rect.left);
+    viewport.Height = (float)(child_rect.bottom - child_rect.top);  
     viewport.MinDepth = 0.0f;
     viewport.MaxDepth = 1.0f;
     d3d11_context_->RSSetViewports(1, &viewport);
     
-    // Clear the render target
+    // Clear the render target to black (child window only shows content, not toolbar)
     float clear_color[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
     d3d11_context_->ClearRenderTargetView(render_target_view_.Get(), clear_color);
     
-    // If we have a shared texture from CEF, render it
+    // If we have a shared texture from CEF, render it to fill the entire DirectX surface
     if (shared_texture_ && texture_srv_) {
         RenderTexturedQuad();
     }
     
-    // Present the frame (1 = V-Sync enabled)
+    // Present the frame (1 = V-Sync enabled, blocking for proper 60 FPS timing)
     swap_chain_->Present(1, 0);
+    
+    // Spout sending is now handled in OnSharedTextureUpdate as soon as a new frame
+    // arrives. This provides the smoothest possible Spout output, decoupled from the
+    // window's V-Sync-locked rendering.
+}
+
+void RivuletBrowserWindow::ResizeDirectXBuffers(int width, int height) {
+    if (!swap_chain_ || !d3d11_device_ || width <= 0 || height <= 0) {
+        return;
+    }
+    
+    // Only log significant size changes to reduce console spam
+    static int last_width = 0, last_height = 0;
+    if (abs(width - last_width) > 50 || abs(height - last_height) > 50) {
+        std::cout << "🔄 Resizing DirectX buffers to " << width << "x" << height << std::endl;
+        last_width = width;
+        last_height = height;
+    }
+    
+    // Step 0: Unbind the old render target from the output-merger stage
+    // This is CRITICAL - must release all GPU references to buffers before resizing
+    d3d11_context_->OMSetRenderTargets(0, nullptr, nullptr);
+    
+    // Step 1: Release the old render target view (required before ResizeBuffers)
+    render_target_view_.Reset();
+    
+    // Step 2: Resize the swap chain buffers to match the new window size
+    HRESULT hr = swap_chain_->ResizeBuffers(
+        2,                              // BufferCount (keep double-buffering)
+        width, height,                  // New dimensions
+        DXGI_FORMAT_B8G8R8A8_UNORM,    // Keep format consistent with creation
+        0                               // Flags
+    );
+    
+    if (FAILED(hr)) {
+        std::cerr << "❌ Failed to resize swap chain buffers: 0x" << std::hex << hr << std::dec << std::endl;
+        return;
+    }
+    
+    // Step 3: Re-create the render target view from the newly resized back buffer
+    ComPtr<ID3D11Texture2D> back_buffer;
+    hr = swap_chain_->GetBuffer(0, IID_PPV_ARGS(&back_buffer));
+    if (FAILED(hr)) {
+        std::cerr << "❌ Failed to get resized back buffer: 0x" << std::hex << hr << std::dec << std::endl;
+        return;
+    }
+    
+    hr = d3d11_device_->CreateRenderTargetView(back_buffer.Get(), nullptr, &render_target_view_);
+    if (FAILED(hr)) {
+        std::cerr << "❌ Failed to create render target view after resize: 0x" << std::hex << hr << std::dec << std::endl;
+        return;
+    }
 }
 
 void RivuletBrowserWindow::RenderTexturedQuad() {
@@ -1676,6 +1851,7 @@ void RivuletBrowserWindow::RenderTexturedQuad() {
     // Draw the quad (6 vertices = 2 triangles)
     d3d11_context_->Draw(6, 0);
 }
+
 
 void RivuletBrowserWindow::OnSharedTextureUpdate(HANDLE shared_handle) {
     if (!shared_handle) {
@@ -1749,20 +1925,13 @@ void RivuletBrowserWindow::OnSharedTextureUpdate(HANDLE shared_handle) {
                 return;
             }
             
-            // Send texture directly to Spout for zero-copy sharing!
+            // Send to Spout immediately upon receiving the new texture.
+            // This provides the smoothest possible Spout output, independent of the
+            // window's V-Sync-locked rendering loop.
             if (spout_sender_) {
-                bool success = spout_sender_->SendTexture(shared_texture_.Get(), desc.Width, desc.Height);
-                
-                // Only log Spout success/failure on first frame or after status changes
-                static bool last_success = true;
-                if (update_count == 1 || success != last_success) {
-                    if (success) {
-                        std::cout << "✅ Hardware-accelerated frame sent to Spout (zero-copy)" << std::endl;
-                    } else {
-                        std::cerr << "❌ Failed to send texture to Spout" << std::endl;
-                    }
-                    last_success = success;
-                }
+                D3D11_TEXTURE2D_DESC desc;
+                shared_texture_->GetDesc(&desc);
+                spout_sender_->SendTexture(shared_texture_.Get(), desc.Width, desc.Height);
             }
             
             // Signal that a new frame is ready for synchronized rendering

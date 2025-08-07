@@ -63,14 +63,14 @@ bool RivuletSpoutSender::SendTexture(ID3D11Texture2D* texture, uint32_t width, u
         return false;
     }
     
-    // Log periodically (every 60 frames)
+    // Log very infrequently (every 1800 frames = ~30 seconds at 60fps)
     static int frame_count = 0;
     frame_count++;
-    if (frame_count % 60 == 0) {
+    if (frame_count % 1800 == 0) {
         int receiver_count = spout_.GetSenderCount();
-        std::cout << "📺 Spout frame sent: " << width << "x" << height 
-                  << " Frame #" << frame_count 
-                  << " Receivers: " << receiver_count << std::endl;
+        std::cout << "📺 Spout: " << width << "x" << height 
+                  << " #" << frame_count 
+                  << " (" << receiver_count << " receivers)" << std::endl;
     }
     
     return true;
