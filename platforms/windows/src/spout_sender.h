@@ -21,7 +21,7 @@ public:
     RivuletSpoutSender(const RivuletSpoutSender&) = delete;
     RivuletSpoutSender& operator=(const RivuletSpoutSender&) = delete;
 
-    bool Initialize(const std::string& name);
+    bool Initialize(const std::string& name, ID3D11Device* d3d_device = nullptr);
     void Shutdown();
 
     // Sending methods

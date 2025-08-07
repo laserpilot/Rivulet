@@ -93,12 +93,7 @@ bool RivuletBrowserWindow::Initialize(const Config& config) {
     
     // Window sized to match Spout aspect ratio
     
-    // Initialize Spout sender
-    spout_sender_ = std::make_unique<RivuletSpoutSender>();
-    if (!spout_sender_->Initialize("Rivulet Output")) {
-        std::cerr << "❌ Failed to initialize Spout sender" << std::endl;
-        return false;
-    }
+    // NOTE: Spout sender initialization moved to after DirectX initialization
     
     // Create main window
     if (!CreateMainWindow(config)) {
@@ -112,6 +107,14 @@ bool RivuletBrowserWindow::Initialize(const Config& config) {
         use_synchronized_rendering_ = false; // Keep disabled until we verify shared textures work
         std::cout << "✅ DirectX 11 hardware acceleration enabled with BGRA support" << std::endl;
         std::cout << "🎯 Testing CEF shared texture compatibility..." << std::endl;
+        
+        // Initialize Spout sender with the D3D11 device for compatibility
+        spout_sender_ = std::make_unique<RivuletSpoutSender>();
+        if (!spout_sender_->Initialize("Rivulet Output", d3d11_device_.Get())) {
+            std::cerr << "❌ Failed to initialize Spout sender with D3D11 device" << std::endl;
+        } else {
+            std::cout << "✅ Spout sender initialized with D3D11 device compatibility" << std::endl;
+        }
     } else {
         hardware_acceleration_enabled_ = false;
         use_synchronized_rendering_ = false;
@@ -159,12 +162,7 @@ bool RivuletBrowserWindow::CompleteInitialization(const Config& config) {
     window_width_ = calculated_content_width;
     window_height_ = desired_content_height;
     
-    // Initialize Spout sender
-    spout_sender_ = std::make_unique<RivuletSpoutSender>();
-    if (!spout_sender_->Initialize("Rivulet Output")) {
-        std::cerr << "❌ Failed to initialize Spout sender" << std::endl;
-        return false;
-    }
+    // NOTE: Spout sender initialization moved to after DirectX initialization
     
     // Create main window
     if (!CreateMainWindow(config)) {
@@ -178,6 +176,14 @@ bool RivuletBrowserWindow::CompleteInitialization(const Config& config) {
         use_synchronized_rendering_ = true; // Now we can enable since CEF uses same GPU
         std::cout << "✅ DirectX 11 hardware acceleration with synchronized GPU adapter" << std::endl;
         std::cout << "🎯 CEF and DirectX are now using the same GPU - shared textures should work!" << std::endl;
+        
+        // Initialize Spout sender with the synchronized D3D11 device for perfect compatibility
+        spout_sender_ = std::make_unique<RivuletSpoutSender>();
+        if (!spout_sender_->Initialize("Rivulet Output", d3d11_device_.Get())) {
+            std::cerr << "❌ Failed to initialize Spout sender with synchronized D3D11 device" << std::endl;
+        } else {
+            std::cout << "✅ Spout sender initialized with synchronized D3D11 device" << std::endl;
+        }
     } else {
         hardware_acceleration_enabled_ = false;
         use_synchronized_rendering_ = false;
@@ -1860,17 +1866,19 @@ void RivuletBrowserWindow::OnSharedTextureUpdate(HANDLE shared_handle) {
     }
     
     // Only log shared texture updates occasionally to avoid spam
-    static int update_count = 0;
-    update_count++;
-    if (update_count == 1 || update_count % 300 == 0) { // Log first update and every 300th (10 seconds at 30fps)
-        std::cout << "🔍 Shared texture update #" << update_count << " (handle: " << shared_handle << ")" << std::endl;
+    static uint64_t frame_sequence = 0;
+    frame_sequence++;
+    if (frame_sequence == 1 || frame_sequence % 300 == 0) { // Log first update and every 300th (10 seconds at 30fps)
+        std::cout << "🔍 Shared texture update #" << frame_sequence << " (handle: " << shared_handle << ")" << std::endl;
     }
     
-    // Approach 1: Try with our D3D11 device
+    // Always process textures to ensure Spout output works
     if (d3d11_device_) {
-        // Use the modern OpenSharedResource1 method (we know this works from debugging)
+        // OPTIMIZATION: Use modern OpenSharedResource1 first (faster on newer systems)
         ComPtr<ID3D11Device1> device1;
         HRESULT hr = d3d11_device_.As(&device1);
+        
+        ComPtr<ID3D11Texture2D> new_texture;
         
         if (SUCCEEDED(hr)) {
             ComPtr<ID3D11Resource> shared_resource;
@@ -1880,7 +1888,7 @@ void RivuletBrowserWindow::OnSharedTextureUpdate(HANDLE shared_handle) {
             );
             
             if (SUCCEEDED(hr)) {
-                hr = shared_resource.As(&shared_texture_);
+                hr = shared_resource.As(&new_texture);
             }
         }
         
@@ -1888,20 +1896,52 @@ void RivuletBrowserWindow::OnSharedTextureUpdate(HANDLE shared_handle) {
         if (FAILED(hr)) {
             hr = d3d11_device_->OpenSharedResource(
                 shared_handle,
-                IID_PPV_ARGS(&shared_texture_)
+                IID_PPV_ARGS(&new_texture)
             );
         }
         
         if (SUCCEEDED(hr)) {
-            // Get texture description to extract dimensions
+            // OPTIMIZATION: Get texture description once for multiple uses
+            
+            // CRITICAL: CEF requires IDXGIKeyedMutex synchronization for shared textures
+            // Query for the keyed mutex interface
+            ComPtr<IDXGIKeyedMutex> keyed_mutex;
+            HRESULT mutex_hr = new_texture->QueryInterface(IID_PPV_ARGS(&keyed_mutex));
+            bool use_mutex_sync = SUCCEEDED(mutex_hr);
+            
+            if (!use_mutex_sync) {
+                if (frame_sequence <= 10) {
+                    std::cerr << "⚠️ CEF texture doesn't support IDXGIKeyedMutex: " << std::hex << mutex_hr << std::endl;
+                    std::cerr << "   Continuing without mutex synchronization (fallback mode)" << std::endl;
+                }
+            } else {
+                // Acquire the mutex lock (key=0, infinite timeout)
+                // This blocks until CEF has finished writing and released its lock
+                HRESULT acquire_hr = keyed_mutex->AcquireSync(0, INFINITE);
+                if (FAILED(acquire_hr)) {
+                    if (frame_sequence <= 10) {
+                        std::cerr << "❌ Failed to acquire CEF texture mutex: " << std::hex << acquire_hr << std::endl;
+                    }
+                    return;
+                }
+            }
+            
             D3D11_TEXTURE2D_DESC desc;
-            shared_texture_->GetDesc(&desc);
+            new_texture->GetDesc(&desc);
             
             // Only log success on first update
-            if (update_count == 1) {
+            if (frame_sequence == 1) {
                 std::cout << "✅ Shared texture opened successfully!" << std::endl;
                 std::cout << "📐 Texture dimensions: " << desc.Width << "x" << desc.Height << std::endl;
-                std::cout << "🎨 Texture format: " << desc.Format << std::endl;
+                std::cout << "🎨 Texture format: " << desc.Format << " (" << 
+                    (desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ? "BGRA" : "Other") << ")" << std::endl;
+            }
+            
+            // Always update the texture reference for reliable Spout output
+            shared_texture_ = new_texture;
+            
+            if (frame_sequence == 1) {
+                std::cout << "🔒 Successfully acquired CEF texture mutex lock" << std::endl;
             }
             
             // Create shader resource view for rendering
@@ -1919,22 +1959,33 @@ void RivuletBrowserWindow::OnSharedTextureUpdate(HANDLE shared_handle) {
             );
             
             if (FAILED(srv_hr)) {
-                if (update_count == 1) {
+                if (frame_sequence <= 10) { // Only log first few failures to avoid spam
                     std::cerr << "❌ Failed to create shader resource view: " << std::hex << srv_hr << std::endl;
                 }
                 return;
             }
             
-            // Send to Spout immediately upon receiving the new texture.
-            // This provides the smoothest possible Spout output, independent of the
-            // window's V-Sync-locked rendering loop.
+            // Send to Spout IMMEDIATELY upon texture reception - critical for smooth output
             if (spout_sender_) {
-                D3D11_TEXTURE2D_DESC desc;
-                shared_texture_->GetDesc(&desc);
-                spout_sender_->SendTexture(shared_texture_.Get(), desc.Width, desc.Height);
+                bool send_success = spout_sender_->SendTexture(shared_texture_.Get(), desc.Width, desc.Height);
+                
+                if (!send_success && frame_sequence <= 10) {
+                    std::cerr << "❌ Spout texture send failed on frame " << frame_sequence << std::endl;
+                } else if (frame_sequence == 1) {
+                    std::cout << "✅ First Spout texture sent successfully: " << desc.Width << "x" << desc.Height << std::endl;
+                }
             }
             
-            // Signal that a new frame is ready for synchronized rendering
+            // CRITICAL: Release the mutex lock immediately after texture use (if using mutex)
+            // This allows CEF to acquire the lock for the next frame
+            if (use_mutex_sync && keyed_mutex) {
+                HRESULT release_hr = keyed_mutex->ReleaseSync(0);
+                if (FAILED(release_hr) && frame_sequence <= 10) {
+                    std::cerr << "❌ Failed to release CEF texture mutex: " << std::hex << release_hr << std::endl;
+                }
+            }
+            
+            // OPTIMIZATION: Signal frame ready immediately after successful Spout send
             if (use_synchronized_rendering_) {
                 new_frame_ready_ = true;
                 SetEvent(frame_ready_event_);
@@ -1944,7 +1995,7 @@ void RivuletBrowserWindow::OnSharedTextureUpdate(HANDLE shared_handle) {
             }
             return;
         } else {
-            if (update_count == 1) {
+            if (frame_sequence <= 10) { // Only log first 10 failures to avoid console spam
                 std::cerr << "❌ Failed to open shared texture with synchronized device: 0x" << std::hex << hr << std::dec << std::endl;
             }
         }
@@ -1989,21 +2040,38 @@ void RivuletBrowserWindow::OnSharedTextureUpdate(HANDLE shared_handle) {
             std::cout << "📐 Texture dimensions: " << desc.Width << "x" << desc.Height << std::endl;
             std::cout << "🎨 Texture format: " << desc.Format << std::endl;
             
-            // TODO: Copy texture to our device or use it directly with Spout
+            // Send texture directly to Spout
             // For now, store it for the next frame
             shared_texture_ = temp_texture;
+            
+            // Send to Spout
+            if (spout_sender_) {
+                spout_sender_->SendTexture(shared_texture_.Get(), desc.Width, desc.Height);
+            }
             
             // Trigger window redraw
             InvalidateRect(hwnd_, nullptr, FALSE);
             return;
         } else {
-            if (update_count == 1) {
+            if (frame_sequence <= 10) {
                 std::cerr << "❌ Failed to open shared texture with separate device: " << std::hex << hr << std::endl;
             }
         }
     }
     
-    if (update_count == 1) {
+    // OPTIMIZATION: Send existing texture to Spout even if handle recreation failed
+    // This ensures continuous Spout output even during temporary D3D issues
+    if (shared_texture_ && spout_sender_) {
+        D3D11_TEXTURE2D_DESC desc;
+        shared_texture_->GetDesc(&desc);
+        spout_sender_->SendTexture(shared_texture_.Get(), desc.Width, desc.Height);
+        
+        if (frame_sequence <= 10) {
+            std::cout << "🔄 Sent cached texture to Spout during handle update issue" << std::endl;
+        }
+    }
+    
+    if (frame_sequence <= 10) {
         std::cerr << "❌ All approaches to open shared texture failed" << std::endl;
     }
 }

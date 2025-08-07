@@ -16,12 +16,21 @@ RivuletSpoutSender::~RivuletSpoutSender() {
     Shutdown();
 }
 
-bool RivuletSpoutSender::Initialize(const std::string& name) {
+bool RivuletSpoutSender::Initialize(const std::string& name, ID3D11Device* d3d_device) {
     if (initialized_) return true;
     
     std::cout << "Initializing Spout sender: " << name << std::endl;
     
     sender_name_ = name;
+    
+    // CRITICAL: Use the same D3D11 device that CEF is using
+    if (d3d_device) {
+        std::cout << "🔧 Setting Spout to use provided D3D11 device for compatibility" << std::endl;
+        if (!spout_.OpenDirectX11(d3d_device)) {
+            std::cerr << "❌ Failed to open Spout with provided D3D11 device" << std::endl;
+            return false;
+        }
+    }
     
     // Initialize Spout sender
     if (!spout_.SetSenderName(sender_name_.c_str())) {
@@ -44,31 +53,43 @@ void RivuletSpoutSender::Shutdown() {
 }
 
 bool RivuletSpoutSender::SendTexture(ID3D11Texture2D* texture, uint32_t width, uint32_t height) {
-    if (!initialized_ || !texture) return false;
+    if (!initialized_ || !texture) {
+        std::cerr << "❌ SendTexture failed: " << (!initialized_ ? "not initialized" : "null texture") << std::endl;
+        return false;
+    }
     
-    // Check if we need to update sender dimensions
-    if (width != last_width_ || height != last_height_) {
-        std::cout << "Updating Spout sender dimensions: " << width << "x" << height << std::endl;
-        // SpoutDX automatically handles dimension updates
+    
+    // OPTIMIZATION: Cache dimension changes and only log significant ones
+    bool dimensions_changed = (width != last_width_ || height != last_height_);
+    if (dimensions_changed) {
+        // Only log if change is significant (>10 pixels) to avoid spam from minor variations
+        if (abs((int)width - (int)last_width_) > 10 || abs((int)height - (int)last_height_) > 10) {
+            std::cout << "Updating Spout sender dimensions: " << width << "x" << height << " (was " << last_width_ << "x" << last_height_ << ")" << std::endl;
+        }
         last_width_ = width;
         last_height_ = height;
     }
     
-    // Send the D3D11 texture directly
-    // This is the zero-copy path!
+    // OPTIMIZATION: Send the D3D11 texture directly with minimal overhead
+    // This is the zero-copy path - critical for performance!
     bool success = spout_.SendTexture(texture);
     
+    // OPTIMIZATION: Only log failures occasionally to avoid performance impact
     if (!success) {
-        std::cerr << "❌ Failed to send texture via Spout" << std::endl;
+        static int failure_count = 0;
+        failure_count++;
+        if (failure_count <= 5 || failure_count % 100 == 0) { // Log first 5 failures, then every 100th
+            std::cerr << "❌ Spout texture send failed #" << failure_count << std::endl;
+        }
         return false;
     }
     
-    // Log very infrequently (every 1800 frames = ~30 seconds at 60fps)
+    // OPTIMIZATION: Ultra-minimal logging for performance (every 3600 frames = ~60 seconds at 60fps)
     static int frame_count = 0;
     frame_count++;
-    if (frame_count % 1800 == 0) {
+    if (frame_count % 3600 == 0) {
         int receiver_count = spout_.GetSenderCount();
-        std::cout << "📺 Spout: " << width << "x" << height 
+        std::cout << "📺 Spout optimized: " << width << "x" << height 
                   << " #" << frame_count 
                   << " (" << receiver_count << " receivers)" << std::endl;
     }
