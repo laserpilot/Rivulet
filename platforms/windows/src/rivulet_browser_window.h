@@ -53,6 +53,11 @@ public:
     
     // GPU adapter synchronization
     std::string GetSelectedAdapterLuidString() const;
+    
+    // Console control
+    static void SetVerboseLogging(bool enabled) { verbose_logging_ = enabled; }
+    static bool IsVerboseLogging() { return verbose_logging_; }
+    static void ToggleConsoleWindow();
 
 private:
     // Window creation and management
@@ -197,6 +202,7 @@ private:
     HWND edit_hwnd_;    // URL edit box
     HWND go_hwnd_;      // Go button
     HWND resolution_hwnd_; // Resolution dropdown
+    HWND apply_resolution_hwnd_; // Apply resolution button
     HWND directx_child_hwnd_; // Dedicated child window for DirectX content
     WNDPROC edit_wndproc_old_;
     WNDPROC resolution_wndproc_old_;
@@ -255,6 +261,9 @@ private:
     // Rendering mode
     bool hardware_acceleration_enabled_;
     bool use_synchronized_rendering_;
+    
+    // Console and debugging control
+    static bool verbose_logging_;
 
     // Control IDs
     static constexpr int ID_BACK = 1001;
@@ -264,6 +273,7 @@ private:
     static constexpr int ID_URL_EDIT = 1005;
     static constexpr int ID_GO = 1006;
     static constexpr int ID_RESOLUTION = 1007;
+    static constexpr int ID_APPLY_RESOLUTION = 1008;
 
     // Control dimensions
     static constexpr int BUTTON_WIDTH = 50;

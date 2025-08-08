@@ -20,6 +20,9 @@
 
 namespace Rivulet {
 
+// Static member definition
+bool RivuletBrowserWindow::verbose_logging_ = false;
+
 namespace {
     const wchar_t kWindowClassName[] = L"RivuletBrowserWindow";
 }
@@ -38,6 +41,7 @@ RivuletBrowserWindow::RivuletBrowserWindow(HINSTANCE instance)
     , go_hwnd_(nullptr)
     , edit_wndproc_old_(nullptr)
     , resolution_wndproc_old_(nullptr)
+    , apply_resolution_hwnd_(nullptr)
     , font_(nullptr)
     , initialized_(false)
     , is_closing_(false)
@@ -373,7 +377,17 @@ void RivuletBrowserWindow::CreateControls() {
     
     x += RESOLUTION_WIDTH + TOOLBAR_PADDING;
     
-    // URL edit box - leave space for Go button and resolution dropdown
+    // Apply Resolution button
+    apply_resolution_hwnd_ = CreateWindowW(
+        L"BUTTON", L"Apply",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        x, y, BUTTON_WIDTH, BUTTON_HEIGHT,
+        hwnd_, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_APPLY_RESOLUTION)), instance_, nullptr
+    );
+    SendMessage(apply_resolution_hwnd_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+    x += BUTTON_WIDTH + TOOLBAR_PADDING;
+    
+    // URL edit box - leave space for Go button, resolution dropdown, and apply button
     int edit_width = window_width_ - x - TOOLBAR_PADDING - BUTTON_WIDTH - TOOLBAR_PADDING;
     edit_hwnd_ = CreateWindowW(
         L"EDIT", L"",
@@ -431,7 +445,9 @@ int RivuletBrowserWindow::RunMessageLoop() {
 
 int RivuletBrowserWindow::RunSynchronizedRenderLoop() {
     std::cout << "🚀 Starting V-Sync locked render loop - Present(1,0) drives perfect timing" << std::endl;
-    std::cout << "🎯 Philosophy: Render every V-Sync using newest available frame" << std::endl;
+    if (verbose_logging_) {
+        std::cout << "🎯 Philosophy: Render every V-Sync using newest available frame" << std::endl;
+    }
     
     MSG msg;
     DWORD frame_start_time = GetTickCount();
@@ -497,7 +513,9 @@ int RivuletBrowserWindow::RunSynchronizedRenderLoop() {
                 double fps = (double)frame_count * 1000.0 / (current_time - frame_start_time);
                 double new_frame_rate = (double)new_frame_count * 1000.0 / (current_time - frame_start_time);
                 
-                std::cout << "📊 " << (int)fps << " FPS | " << (int)new_frame_rate << " new" << std::endl;
+                if (verbose_logging_) {
+                    std::cout << "📊 " << (int)fps << " FPS | " << (int)new_frame_rate << " new" << std::endl;
+                }
                 
                 frame_count = 0;
                 new_frame_count = 0; 
@@ -517,7 +535,9 @@ int RivuletBrowserWindow::RunSynchronizedRenderLoop() {
         // No Sleep() calls that would interfere with V-Sync pacing
     }
     
-    std::cout << "✅ V-Sync locked render loop finished" << std::endl;
+    if (verbose_logging_) {
+        std::cout << "✅ V-Sync locked render loop finished" << std::endl;
+    }
     return static_cast<int>(msg.wParam);
 }
 
@@ -772,7 +792,9 @@ void RivuletBrowserWindow::OnCreate(LPCREATESTRUCT lpCreateStruct) {
 
     // Initialize synchronized rendering instead of timer-based updates
     if (use_synchronized_rendering_) {
-        std::cout << "🎯 Using synchronized render loop for perfect frame timing" << std::endl;
+        if (verbose_logging_) {
+            std::cout << "🎯 Using synchronized render loop for perfect frame timing" << std::endl;
+        }
     } else {
         // Fallback to timer for legacy mode
         SetTimer(hwnd_, 1, 16, nullptr); // Timer ID 1, ~16ms interval
@@ -838,14 +860,14 @@ void RivuletBrowserWindow::OnSize() {
     // CEF renders at fixed size (spout_width_ x spout_height_) regardless of window size.
     // Calling WasResized() creates a contradiction with GetViewRect() and causes flickering.
     
-    // Resize URL edit box and Go button (accounting for resolution dropdown)
-    if (edit_hwnd_ && go_hwnd_ && resolution_hwnd_) {
-        // Calculate total fixed width: 4 nav buttons + resolution dropdown + go button + padding
-        int total_fixed_width = BUTTON_WIDTH * 5 + RESOLUTION_WIDTH + TOOLBAR_PADDING * 8;
+    // Resize URL edit box and Go button (accounting for resolution dropdown and apply button)
+    if (edit_hwnd_ && go_hwnd_ && resolution_hwnd_ && apply_resolution_hwnd_) {
+        // Calculate total fixed width: 4 nav buttons + resolution dropdown + apply button + go button + padding
+        int total_fixed_width = BUTTON_WIDTH * 6 + RESOLUTION_WIDTH + TOOLBAR_PADDING * 9;
         int edit_width = (rect.right - rect.left) - total_fixed_width;
         
-        // Position after: Back + Forward + Reload + Stop + Resolution
-        int edit_x = BUTTON_WIDTH * 4 + RESOLUTION_WIDTH + TOOLBAR_PADDING * 6;
+        // Position after: Back + Forward + Reload + Stop + Resolution + Apply
+        int edit_x = BUTTON_WIDTH * 5 + RESOLUTION_WIDTH + TOOLBAR_PADDING * 7;
         
         SetWindowPos(edit_hwnd_, nullptr,
                     edit_x, TOOLBAR_PADDING,
@@ -1029,10 +1051,11 @@ void RivuletBrowserWindow::OnCommand(WPARAM wParam) {
             OnGo();
             break;
         case ID_RESOLUTION:
-            if (HIWORD(wParam) == CBN_CLOSEUP) {
-                // Dropdown closed - check if selection actually changed
-                OnResolutionChange();
-            }
+            // Remove automatic resolution change on dropdown close
+            // User must now click Apply button
+            break;
+        case ID_APPLY_RESOLUTION:
+            OnResolutionChange();
             break;
     }
 }
@@ -1175,6 +1198,7 @@ void RivuletBrowserWindow::ToggleToolbar() {
     ShowWindow(edit_hwnd_, show_cmd);
     ShowWindow(go_hwnd_, show_cmd);
     ShowWindow(resolution_hwnd_, show_cmd);
+    ShowWindow(apply_resolution_hwnd_, show_cmd);
     
     // Adjust window size to account for toolbar visibility
     int toolbar_height = toolbar_visible_ ? TOOLBAR_HEIGHT : 0;
@@ -1195,6 +1219,22 @@ void RivuletBrowserWindow::ToggleToolbar() {
     std::cout << (toolbar_visible_ ? "✅ Toolbar shown" : "🔲 Toolbar hidden") << " (F11 to toggle)" << std::endl;
 }
 
+// Static method to toggle console window visibility
+void RivuletBrowserWindow::ToggleConsoleWindow() {
+    HWND console_hwnd = GetConsoleWindow();
+    if (console_hwnd) {
+        bool isVisible = IsWindowVisible(console_hwnd);
+        if (isVisible) {
+            ShowWindow(console_hwnd, SW_HIDE);
+            // Can't use std::cout when console is hidden, so this won't show
+        } else {
+            ShowWindow(console_hwnd, SW_SHOW);
+            SetForegroundWindow(console_hwnd); // Bring to front
+            std::cout << "🔊 Console window shown (F12 to hide)" << std::endl;
+        }
+    }
+}
+
 void RivuletBrowserWindow::OnMouseEvent(UINT message, WPARAM wParam, LPARAM lParam) {
     if (!browser_) return;
     
@@ -1213,22 +1253,33 @@ void RivuletBrowserWindow::OnMouseEvent(UINT message, WPARAM wParam, LPARAM lPar
     int content_height = client_rect.bottom - toolbar_height;
     
     if (content_width > 0 && content_height > 0) {
-        // Calculate the actual drawing area (same logic as OnPaint)
+        // Calculate the actual drawing area (must match OnPaint logic exactly)
         float content_aspect = (float)content_width / content_height;
-        float spout_aspect = (float)spout_width_ / spout_height_;
+        // Use the same dimensions as OnPaint - check if we're in hardware or software mode
+        float spout_aspect;
+        if (hardware_acceleration_enabled_ || (bitmap_width_ > 0 && bitmap_height_ > 0)) {
+            // Use bitmap dimensions for consistency with OnPaint when available
+            spout_aspect = (bitmap_width_ > 0 && bitmap_height_ > 0) ? 
+                          (float)bitmap_width_ / bitmap_height_ : 
+                          (float)spout_width_ / spout_height_;
+        } else {
+            spout_aspect = (float)spout_width_ / spout_height_;
+        }
         
         int draw_width, draw_height, draw_x, draw_y;
         
         if (content_aspect > spout_aspect) {
-            draw_width = content_width;
-            draw_height = (int)(content_width / spout_aspect);
-            draw_x = 0;
-            draw_y = (content_height - draw_height) / 2;
-        } else {
+            // Content is wider - fit to height, center horizontally (corrected)
             draw_height = content_height;
             draw_width = (int)(content_height * spout_aspect);
             draw_x = (content_width - draw_width) / 2;
             draw_y = 0;
+        } else {
+            // Content is taller - fit to width, center vertically (corrected)
+            draw_width = content_width;
+            draw_height = (int)(content_width / spout_aspect);
+            draw_x = 0;
+            draw_y = (content_height - draw_height) / 2;
         }
         
         // Check if click is within the actual content area
@@ -1291,6 +1342,10 @@ void RivuletBrowserWindow::OnKeyEvent(UINT message, WPARAM wParam, LPARAM lParam
     if (message == WM_KEYDOWN && wParam == VK_F11) {
         ToggleToolbar();
         return; // Don't send F11 to CEF
+    }
+    if (message == WM_KEYDOWN && wParam == VK_F12) {
+        ToggleConsoleWindow();
+        return; // Don't send F12 to CEF
     }
     
     CefKeyEvent key_event;
@@ -1868,7 +1923,7 @@ void RivuletBrowserWindow::OnSharedTextureUpdate(HANDLE shared_handle) {
     // Only log shared texture updates occasionally to avoid spam
     static uint64_t frame_sequence = 0;
     frame_sequence++;
-    if (frame_sequence == 1 || frame_sequence % 300 == 0) { // Log first update and every 300th (10 seconds at 30fps)
+    if (verbose_logging_ && (frame_sequence == 1 || frame_sequence % 300 == 0)) { // Log first update and every 300th (10 seconds at 30fps)
         std::cout << "🔍 Shared texture update #" << frame_sequence << " (handle: " << shared_handle << ")" << std::endl;
     }
     
@@ -2378,11 +2433,13 @@ void RivuletBrowserWindow::BrowserClient::OnAcceleratedPaint(CefRefPtr<CefBrowse
         if (parent_->use_synchronized_rendering_) {
             // Synchronized mode: minimal logging to avoid spam
             static int frame_counter = 0;
-            if (++frame_counter % 60 == 0) {
+            if (verbose_logging_ && ++frame_counter % 60 == 0) {
                 std::cout << "🎯 " << frame_counter << " synchronized frames received" << std::endl;
             }
         } else {
-            std::cout << "🚀 Received hardware-accelerated frame from CEF" << std::endl;
+            if (verbose_logging_) {
+                std::cout << "🚀 Received hardware-accelerated frame from CEF" << std::endl;
+            }
         }
         
         parent_->OnSharedTextureUpdate(info.shared_texture_handle);

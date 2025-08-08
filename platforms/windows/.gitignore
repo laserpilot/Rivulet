@@ -1,0 +1,97 @@
+# Windows Platform - Rivulet .gitignore
+
+# === CEF Binaries (LARGE FILES - DO NOT COMMIT) ===
+cef/Debug/
+cef/Release/
+cef/Resources/
+cef/build/
+cef/*.dll
+cef/*.lib
+cef/*.exe
+cef/*.pak
+cef/*.bin
+
+# === Build Artifacts ===
+build/
+*.obj
+*.pch
+*.idb
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.exe
+*.pak
+*.bin
+
+# === Release Packages ===
+Rivulet-v*.zip
+Rivulet-v*/
+*.zip
+releases/
+
+# === Visual Studio ===
+.vs/
+*.vcxproj.user
+*.vcxproj.filters
+*.sln.docstates
+x64/
+Debug/
+Release/
+*.tlog
+*.log
+*.iobj
+*.ipdb
+
+# === CMake ===
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake.in
+
+# === Temporary Files ===
+*.tmp
+*.temp
+*.cache
+*.swp
+*.swo
+*~
+
+# === Spout2 Build Artifacts ===
+lib/Spout2/build/
+lib/Spout2/bin/
+lib/Spout2/**/*.dll
+lib/Spout2/**/*.lib
+lib/Spout2/**/*.exe
+lib/Spout2/**/*.obj
+
+# === System Files ===
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# === IDE Files ===
+*.sln
+*.vcxproj
+*.vcxproj.user
+*.suo
+*.user
+
+# === Keep These (Source Files Only) ===
+!src/
+!*.h
+!*.cpp
+!*.c
+!*.cc
+!CMakeLists.txt
+!*.bat
+!*.md
+!*.txt
+
+# === Exception: Keep Essential Headers ===
+!cef/include/
+!cef/libcef_dll/
+!lib/Spout2/SPOUTSDK/SpoutGL/
+!lib/Spout2/SPOUTSDK/SpoutDirectX/
