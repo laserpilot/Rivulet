@@ -87,7 +87,7 @@ impl CefBrowser {
 
             // Create off-screen browser
             let window_info = cef::window_info::WindowInfo::new_windowless();
-            let url = CefString::new("https://www.google.com"); // Default URL
+            let url = CefString::new("https://www.testufo.com"); // Default URL
 
             match Browser::create_browser_sync(
                 &window_info,
